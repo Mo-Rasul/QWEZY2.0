@@ -100,50 +100,12 @@ export async function POST(req: NextRequest) {
       },
     })
 
-    // 5. Create a session for immediate login
-    // Sign them in with a short-lived token
-    const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.admin.createSession({
-      user_id: userId,
-    } as any) // using admin API to create session without password
-
-    if (sessionError || !sessionData) {
-      // Fallback: return success but they'll need to use the magic link
-      return NextResponse.json({ 
-        success: true, 
-        magicLinkSent: true,
-        immediateLogin: false,
-        message: 'Check your email for your demo link'
-      })
-    }
-
-    // Return session for immediate login
-    const res = NextResponse.json({
-      success: true,
-      magicLinkSent: true,
-      immediateLogin: true,
-      session: {
-        access_token: sessionData.session.access_token,
-        refresh_token: sessionData.session.refresh_token,
-      }
-    })
-
-    // Set session cookies so they're logged in immediately
-    res.cookies.set('qwezy_session', sessionData.session.access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7,
-      path: '/',
-    })
-    res.cookies.set('qwezy_company', DEMO_COMPANY_ID, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7,
-      path: '/',
-    })
-
-    return res
+    // 5. Return success — user gets in via magic link email
+        return NextResponse.json({
+          success: true,
+          magicLinkSent: true,
+          immediateLogin: false,
+        })
 
   } catch (err: any) {
     console.error('Demo access error:', err)
