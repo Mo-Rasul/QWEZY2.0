@@ -1,7 +1,7 @@
 // middleware.ts
 import { NextRequest, NextResponse } from 'next/server'
 
-const PUBLIC = ['/', '/auth', '/master/login']
+const PUBLIC = ['/', '/auth', '/auth/callback', '/mobile', '/master/login']
 const MASTER_ONLY = ['/master']
 const MOBILE_EXEMPT = ['/mobile', '/auth', '/master']
 
