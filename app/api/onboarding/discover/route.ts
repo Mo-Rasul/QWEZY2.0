@@ -1,130 +1,113 @@
-'use client'
-import { useState } from 'react'
+// app/api/onboarding/discover/route.ts
+// Real schema discovery — connects to customer DB and reads actual tables
+import { NextRequest, NextResponse } from 'next/server'
+import { Pool } from 'pg'
+import { decryptCredential } from '@/lib/company-context'
+import { logError } from '@/lib/rate-limit'
 
-const C = { accent:'#059669', accentDark:'#047857', accentBg:'#ECFDF5', text:'#0F1923', textMuted:'#4B5563', textLight:'#9CA3AF' }
+export async function POST(req: NextRequest) {
+  const { host, port, database, username, password, ssl } = await req.json()
 
-const QUERIES = [
-  'Who are our top 10 customers by revenue?',
-  'Show monthly MRR for the last 12 months',
-  'Which products are below reorder level?',
-  'What is our churn rate this quarter?',
-]
+  const pool = new Pool({
+    host, port: parseInt(port)||5432, database,
+    user: username,
+    password: password.startsWith('enc:') ? decryptCredential(password) : password,
+    ssl: ssl ? { rejectUnauthorized: false } : false,
+    max: 2, connectionTimeoutMillis: 10000,
+  })
 
-export default function MobileLanding() {
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name:'', email:'', company:'' })
-  const [sent, setSent] = useState(false)
-  const [loading, setLoading] = useState(false)
+  try {
+    const client = await pool.connect()
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    try {
-      const res = await fetch('/api/demo-access', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ ...form, role:'Other', teamSize:'2-5' })
-      })
-      const data = await res.json()
-      if (data.immediateLogin) {
-        window.location.href = '/dashboard'
-      } else {
-        setSent(true)
+    // Get tables with row counts and last modified date
+    const tablesResult = await client.query(`
+      SELECT
+        t.table_name,
+        t.table_schema,
+        obj_description(pgc.oid, 'pg_class') as description,
+        pgc.reltuples::bigint as estimated_rows
+      FROM information_schema.tables t
+      JOIN pg_class pgc ON pgc.relname = t.table_name
+      WHERE t.table_schema = current_schema()
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name
+    `)
+
+    // Get columns for each table
+    const colsResult = await client.query(`
+      SELECT
+        c.table_name,
+        c.column_name,
+        c.data_type,
+        c.is_nullable,
+        c.column_default,
+        EXISTS (
+          SELECT 1 FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+          WHERE tc.table_name = c.table_name
+            AND tc.constraint_type = 'PRIMARY KEY'
+            AND kcu.column_name = c.column_name
+        ) as is_pk
+      FROM information_schema.columns c
+      WHERE c.table_schema = current_schema()
+      ORDER BY c.table_name, c.ordinal_position
+    `)
+
+    // Get foreign keys
+    const fkResult = await client.query(`
+      SELECT
+        kcu.table_name as from_table,
+        kcu.column_name as from_col,
+        ccu.table_name as to_table,
+        ccu.column_name as to_col
+      FROM information_schema.referential_constraints rc
+      JOIN information_schema.key_column_usage kcu
+        ON kcu.constraint_name = rc.constraint_name
+      JOIN information_schema.constraint_column_usage ccu
+        ON ccu.constraint_name = rc.unique_constraint_name
+      WHERE kcu.table_schema = current_schema()
+    `)
+
+    client.release()
+    await pool.end()
+
+    // Group columns by table
+    const colsByTable: Record<string,any[]> = {}
+    colsResult.rows.forEach(col => {
+      if (!colsByTable[col.table_name]) colsByTable[col.table_name] = []
+      colsByTable[col.table_name].push(col)
+    })
+
+    // Build tables array with smart column flagging
+    const IMPORTANT_PATTERNS = /^(id$|.*_id$|created_at|updated_at|date|amount|total|price|revenue|status|name$|email$|type$|count|qty|quantity)/i
+    const tables = tablesResult.rows.map(t => {
+      const cols = colsByTable[t.table_name] || []
+      return {
+        name: t.table_name,
+        rows: Math.max(0, t.estimated_rows),
+        cols: cols.map(c => ({
+          name: c.column_name,
+          type: c.data_type,
+          pk: c.is_pk,
+          nullable: c.is_nullable === 'YES',
+          flagged: c.is_pk || IMPORTANT_PATTERNS.test(c.column_name),
+        })),
+        pk: cols.find(c=>c.is_pk)?.column_name || 'id',
       }
-    } catch { setSent(true) }
-    setLoading(false)
+    })
+
+    // Build join suggestions from FK constraints
+    const joins = fkResult.rows.map(fk => ({
+      from: fk.from_table, fromCol: fk.from_col,
+      to: fk.to_table, toCol: fk.to_col,
+      type: 'INNER', confidence: 0.98, approved: true,
+    }))
+
+    return NextResponse.json({ tables, joins })
+  } catch (err: any) {
+    await pool.end().catch(()=>{})
+    await logError({ route: '/api/onboarding/discover', errorType: 'discovery_failed', message: err.message, severity: 'error' })
+    return NextResponse.json({ error: err.message }, { status: 500 })
   }
-
-  return (
-    <div style={{fontFamily:'Inter,-apple-system,sans-serif',background:'#fff',minHeight:'100vh',display:'flex',flexDirection:'column'}}>
-      <style>{`*{box-sizing:border-box;margin:0;padding:0}`}</style>
-
-      {/* Header */}
-      <div style={{background:'#022c22',padding:'16px 20px',display:'flex',alignItems:'center',gap:9}}>
-        <div style={{width:28,height:28,background:'linear-gradient(135deg,#10B981,#059669)',borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center'}}>
-          <span style={{color:'#fff',fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:11}}>{'{ }'}</span>
-        </div>
-        <span style={{fontWeight:800,fontSize:18,color:'#fff',letterSpacing:'-0.3px'}}>Qwezy</span>
-      </div>
-
-      <div style={{flex:1,padding:'32px 24px',display:'flex',flexDirection:'column',gap:28}}>
-        {/* Hero */}
-        <div>
-          <div style={{display:'inline-flex',alignItems:'center',gap:7,padding:'4px 10px',borderRadius:20,background:C.accentBg,border:'1px solid #A7F3D0',marginBottom:16}}>
-            <div style={{width:6,height:6,borderRadius:'50%',background:C.accent}}/>
-            <span style={{fontSize:12,fontWeight:600,color:C.accentDark}}>Early access - limited spots</span>
-          </div>
-          <h1 style={{fontSize:34,fontWeight:800,color:C.text,letterSpacing:'-1px',lineHeight:1.1,marginBottom:14}}>
-            Ask your data<br/><span style={{color:C.accent}}>anything.</span>
-          </h1>
-          <p style={{fontSize:15,color:C.textMuted,lineHeight:1.65}}>
-            Qwezy translates plain English into SQL - giving your whole team instant answers without writing a single line of code.
-          </p>
-        </div>
-
-        {/* Sample queries */}
-        <div>
-          <div style={{fontSize:12,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:10}}>Try asking</div>
-          <div style={{display:'flex',flexDirection:'column',gap:7}}>
-            {QUERIES.map((q,i)=>(
-              <div key={i} style={{padding:'11px 14px',background:'#F8FAFD',border:'1px solid #E5E7EB',borderRadius:9,fontSize:14,color:C.text,display:'flex',gap:8,alignItems:'center'}}>
-                <span style={{color:C.accent,fontWeight:700,flexShrink:0}}>→</span>{q}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Desktop notice */}
-        <div style={{padding:'16px',background:'#F8FAFD',border:'1px solid #E5E7EB',borderRadius:10,textAlign:'center'}}>
-          <div style={{fontSize:22,marginBottom:8}}>💻</div>
-          <div style={{fontSize:14.5,fontWeight:600,color:C.text,marginBottom:6}}>Best experienced on desktop</div>
-          <div style={{fontSize:13.5,color:C.textMuted,lineHeight:1.6}}>Qwezy is built for data work - query results, SQL editor, and dashboards are designed for a full screen. Sign up now and we'll send you a link for when you're at your desk.</div>
-        </div>
-
-        {/* CTA */}
-        {!showForm && !sent && (
-          <button onClick={()=>setShowForm(true)}
-            style={{background:C.accent,color:'#fff',border:'none',borderRadius:10,padding:'15px',fontSize:16,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',boxShadow:'0 4px 16px rgba(5,150,105,0.3)'}}>
-            Get early access - free
-          </button>
-        )}
-
-        {showForm && !sent && (
-          <form onSubmit={submit} style={{display:'flex',flexDirection:'column',gap:12}}>
-            {[['name','Full name','Jane Smith'],['email','Work email','jane@company.com'],['company','Company','Acme Inc.']].map(([k,l,p])=>(
-              <div key={k}>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>{l}</label>
-                <input type={k==='email'?'email':'text'} value={(form as any)[k]} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))} placeholder={p} required
-                  style={{width:'100%',padding:'12px 14px',borderRadius:8,border:'1.5px solid #E5E7EB',fontSize:15,color:C.text,fontFamily:'Inter,sans-serif'}}/>
-              </div>
-            ))}
-            <button type="submit" disabled={loading||!form.name||!form.email||!form.company}
-              style={{background:C.accent,color:'#fff',border:'none',borderRadius:9,padding:'14px',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',marginTop:4}}>
-              {loading?'Setting up...':'Get access + desktop link'}
-            </button>
-          </form>
-        )}
-
-        {sent && (
-          <div style={{padding:'20px',background:C.accentBg,border:'1px solid #A7F3D0',borderRadius:10,textAlign:'center'}}>
-            <div style={{fontSize:28,marginBottom:8}}>✓</div>
-            <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:6}}>You're in</div>
-            <div style={{fontSize:14,color:C.textMuted,lineHeight:1.6}}>Check your email - we sent you a link that works on any device. See you on desktop.</div>
-          </div>
-        )}
-
-        {/* Trust */}
-        <div style={{display:'flex',flexDirection:'column',gap:7}}>
-          {['Read-only access - we never write to your database','Your data never trains our models','Company-isolated AI context','AES-256 encrypted credentials'].map(item=>(
-            <div key={item} style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:C.textMuted}}>
-              <span style={{color:C.accent,fontWeight:700,flexShrink:0}}>+</span>{item}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={{padding:'20px 24px',borderTop:'1px solid #F3F4F6',textAlign:'center',fontSize:12,color:C.textLight}}>
-        2026 Qwezy Inc. - qwezy.io
-      </div>
-    </div>
-  )
 }
