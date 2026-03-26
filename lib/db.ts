@@ -19,7 +19,7 @@ export interface QueryResult {
 // ── Get pool for a company ────────────────────────────────────────────────────
 export async function getPoolForCompany(companyId: string): Promise<Pool> {
   // Check cache first
-  const cached = [...poolCache.entries()].find(([k]) => k.startsWith(companyId))
+  const cached = Array.from(poolCache.entries()).find(([k]) => k.startsWith(companyId))
   if (cached) return cached[1]
 
   // Load connection from Supabase

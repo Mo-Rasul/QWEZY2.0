@@ -489,7 +489,7 @@ function EmailModal({report,cachedRows,cachedFields,onClose}:{report:any,cachedR
 
   const addRecipient=(val:string)=>{
     const parts=val.split(/[,;\s]+/).map(s=>s.trim()).filter(s=>s.includes('@'))
-    if(parts.length){setRecipients(prev=>[...new Set([...prev,...parts])]);setInputVal('')}
+    if(parts.length){setRecipients(prev => Array.from(new Set([...prev, ...parts])));setInputVal('')}
   }
   const removeRecipient=(email:string)=>setRecipients(prev=>prev.filter(e=>e!==email))
   const previewRows=(cachedRows||[]).slice(0,8)
@@ -1267,8 +1267,7 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
   const [biPanel,setBiPanel]=useState<string|null>(null)
   const [newGroupInput,setNewGroupInput]=useState(false)
   const [newReport,setNewReport]=useState({name:'',description:'',sql:'',schedule:'weekly',refreshHours:168,shared:true,group:'Finance'})
-  const existingGroups=useMemo(()=>[...new Set(reports.map((r:any)=>r.group||'General'))] as string[],[reports])
-
+  const existingGroups = useMemo(() => Array.from(new Set(reports.map((r:any)=>r.group || 'General'))) as string[],[reports])
   useEffect(()=>{
     const h=()=>setMenuOpen(null)
     if(menuOpen) window.addEventListener('click',h)

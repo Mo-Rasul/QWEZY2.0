@@ -3,7 +3,7 @@
 // This is what makes Qwezy understand each company's data specifically.
 // Called on every query — injected as system prompt prefix to Claude.
 
-import { supabaseAdmin } from './supabase-app'
+import { supabaseAdmin } from './lib/supabase-app'
 
 export interface CompanyContext {
   companyId: string

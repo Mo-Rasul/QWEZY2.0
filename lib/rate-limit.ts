@@ -81,11 +81,12 @@ export async function incrementUsage(companyId: string): Promise<void> {
   const monthStr = month.toISOString().split('T')[0]
 
   // Upsert then increment
-  await supabaseAdmin.rpc('increment_query_count', {
-    p_company_id: companyId,
-    p_month: monthStr,
-  }).catch(async () => {
-    // Fallback if RPC not set up yet
+const { error } = await supabaseAdmin.rpc('increment_query_count', {
+  p_company_id: companyId,
+  p_month: monthStr,
+})
+
+  if (error) {
     const { data } = await supabaseAdmin
       .from('query_usage')
       .select('query_count')
@@ -94,15 +95,23 @@ export async function incrementUsage(companyId: string): Promise<void> {
       .single()
 
     const newCount = (data?.query_count || 0) + 1
+
     await supabaseAdmin
       .from('query_usage')
-      .upsert({ company_id: companyId, month: monthStr, query_count: newCount, updated_at: new Date().toISOString() },
-        { onConflict: 'company_id,month' })
-  })
-}
+      .upsert(
+        {
+          company_id: companyId,
+          month: monthStr,
+          query_count: newCount,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'company_id,month' }
+      )
+  }
 
-export async function logError(params: {
-  companyId?: string
+  // ✅ CLOSE THE FUNCTION BEFORE EXPORT
+  }
+export async function logError(params: {  companyId?: string
   userId?: string
   route?: string
   errorType?: string
@@ -111,14 +120,16 @@ export async function logError(params: {
   context?: any
   severity?: 'info'|'warn'|'error'|'critical'
 }) {
-  await supabaseAdmin.from('error_log').insert({
-    company_id: params.companyId || null,
-    user_id: params.userId || null,
-    route: params.route,
-    error_type: params.errorType,
-    message: params.message,
-    stack: params.stack,
-    context: params.context,
-    severity: params.severity || 'error',
-  }).catch(() => {}) // never let error logging crash the request
+const { error } = await supabaseAdmin.from('error_log').insert({
+  company_id: params.companyId,
+  user_id: params.userId,
+  route: params.route,
+  message: params.message,
+  context: params.context,
+  severity: params.severity || 'error',
+})
+
+if (error) {
+ 
+} // swallow error intentionally
 }
