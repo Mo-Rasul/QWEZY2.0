@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
       name, email, company, role,
       team_size: teamSize, industry,
       use_case: useCase, message,
-    }).then(() => {}).catch(() => {})
+    }).then(() => {}, () => {})
 
     // 2. Check if user already exists in our users table
     const { data: existingUser } = await supabaseAdmin
