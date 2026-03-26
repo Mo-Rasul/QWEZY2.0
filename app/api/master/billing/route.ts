@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
       due_date: body.dueDate, notes: body.notes,
     }).select('id').single()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_invoice', target_company:body.companyId, details:{amount:body.amount,type:body.type} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_invoice', target_company:body.companyId, details:{amount:body.amount,type:body.type} }) } catch {}
     return NextResponse.json({ ok: true, id: data.id })
   }
 

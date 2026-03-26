@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
     await supabaseAdmin.from('onboarding_progress').insert({ company_id: data.id })
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_company', target_company: data.id, details:{name:body.name,plan:body.plan} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_company', target_company: data.id, details:{name:body.name,plan:body.plan} }) } catch {}
     return NextResponse.json({ company: data })
   }
 
@@ -69,26 +69,26 @@ export async function POST(req: NextRequest) {
     })
     if (userErr) return NextResponse.json({ error: userErr.message }, { status: 500 })
 
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_user', target_company:body.companyId, details:{email:body.email,role:body.role} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_user', target_company:body.companyId, details:{email:body.email,role:body.role} }) } catch {}
     return NextResponse.json({ ok: true, userId: authData.user.id })
   }
 
   if (body.action === 'update_plan') {
     await supabaseAdmin.from('companies').update({ plan: body.plan }).eq('id', body.companyId)
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'update_plan', target_company:body.companyId, details:{plan:body.plan} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'update_plan', target_company:body.companyId, details:{plan:body.plan} }) } catch {}
     return NextResponse.json({ ok: true })
   }
 
   if (body.action === 'impersonate') {
     // Set impersonation cookie — dashboard reads this and loads that company
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'impersonate', target_company:body.companyId, details:{companyName:body.companyName} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'impersonate', target_company:body.companyId, details:{companyName:body.companyName} }) } catch {}
     const res = NextResponse.json({ ok: true })
     res.cookies.set('qwezy_impersonate', body.companyId, { httpOnly:true, sameSite:'lax', maxAge:3600, path:'/' })
     return res
   }
 
   if (body.action === 'delete_company') {
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'delete_company', target_company:body.companyId, details:{name:body.name} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'delete_company', target_company:body.companyId, details:{name:body.name} }) } catch {}
     await supabaseAdmin.from('companies').delete().eq('id', body.companyId)
     return NextResponse.json({ ok: true })
   }

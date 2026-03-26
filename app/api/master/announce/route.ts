@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
       target: body.target||'all', active: true,
       expires_at: body.expiresAt||null,
     })
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_announcement', details:{title:body.title} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'create_announcement', details:{title:body.title} }) } catch {}
     return NextResponse.json({ ok: true })
   }
 

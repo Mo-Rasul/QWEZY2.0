@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
 
   if (body.action === 'toggle_global') {
     await supabaseAdmin.from('feature_flags').update({ enabled_global: body.enabled }).eq('id', body.flagId)
-    await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'toggle_flag', details:{flag:body.name, enabled:body.enabled} }).catch(()=>{})
+    try { await supabaseAdmin.from('audit_log').insert({ actor:'master', action:'toggle_flag', details:{flag:body.name, enabled:body.enabled} }) } catch {}
     return NextResponse.json({ ok: true })
   }
 
