@@ -76,6 +76,8 @@ export async function POST(req: NextRequest) {
     })
 
     const magicLink = linkData?.properties?.action_link || `${siteUrl}/auth`
+    console.log('Magic link generated:', magicLink)
+    console.log('Sending to:', email)
 
     // 4. Send branded email via Resend with the magic link
     await sendDemoAccess(email, name, magicLink)
