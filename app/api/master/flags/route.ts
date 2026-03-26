@@ -1,7 +1,7 @@
 // app/api/master/flags/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-app'
-import { verifyMasterToken } from '../auth/route'
+import { verifyMasterToken } from '@/lib/verify-master'
 
 export async function GET(req: NextRequest) {
   if (!verifyMasterToken(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
