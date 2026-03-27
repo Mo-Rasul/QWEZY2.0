@@ -75,6 +75,20 @@ export async function POST(req: NextRequest) {
     // Mark code as used
     await supabaseAdmin.from('otp_codes' as any).update({ used: true }).eq('email', email)
 
+    // Find user in auth
+    const { data: { users: authUsers } } = await supabaseAdmin.auth.admin.listUsers()
+    const authUser = authUsers.find((u: any) => u.email === email)
+
+    if (!authUser) {
+      return NextResponse.json({ error: 'Account not found. Please sign up again.' }, { status: 400 })
+    }
+
+    // Always set the demo password to ensure sign-in works
+    await supabaseAdmin.auth.admin.updateUserById(authUser.id, { password: DEMO_PASSWORD })
+
+    // Small delay to let Supabase propagate the password change
+    await new Promise(r => setTimeout(r, 500))
+
     // Sign user in with demo password to get a real session
     const supabasePublic = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
