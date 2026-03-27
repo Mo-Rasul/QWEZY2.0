@@ -1,7 +1,7 @@
 'use client'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, CartesianGrid, PieChart, Pie } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, CartesianGrid, Legend } from 'recharts'
 
 const C = {
   navBg:'#022c22', navBorder:'#064e3b', navText:'#6ee7b7', navActive:'#10b981',
@@ -404,19 +404,24 @@ function FollowUpSuggestions({rows,fields,onAsk}:{rows:any[],fields:string[],onA
 
 // ── Qwezy Chat Tab ────────────────────────────────────────────────────────────
 function QwezyTab({onAsk}:{onAsk:(q:string,conv?:Conversation)=>void}) {
-  const [conversations,setConversations]=useState<Conversation[]>(()=>{
-    try {
+  const [conversations,setConversations]=useState<Conversation[]>([
+    {id:'c0',title:'New conversation',messages:[],createdAt:new Date(),updatedAt:new Date()}
+  ])
+  const [activeId,setActiveId]=useState('c0')
+
+  // Load saved conversations after mount
+  useEffect(()=>{
+    try{
       const saved=sessionStorage.getItem('qwezy_convs')
       if(saved){
         const parsed=JSON.parse(saved)
-        return parsed.map((c:any)=>({...c,createdAt:new Date(c.createdAt),updatedAt:new Date(c.updatedAt),messages:c.messages.map((m:any)=>({...m,timestamp:new Date(m.timestamp)}))}))
+        const convs=parsed.map((c:any)=>({...c,createdAt:new Date(c.createdAt),updatedAt:new Date(c.updatedAt),messages:c.messages.map((m:any)=>({...m,timestamp:new Date(m.timestamp)}))}))
+        setConversations(convs)
       }
-    } catch {}
-    return [{id:'c0',title:'New conversation',messages:[],createdAt:new Date(),updatedAt:new Date()}]
-  })
-  const [activeId,setActiveId]=useState(()=>{
-    try { return sessionStorage.getItem('qwezy_active_id')||'c0' } catch { return 'c0' }
-  })
+      const savedId=sessionStorage.getItem('qwezy_active_id')
+      if(savedId)setActiveId(savedId)
+    }catch{}
+  },[])
   const [input,setInput]=useState('')
   const [directSQL,setDirectSQL]=useState('SELECT *\nFROM orders\nLIMIT 10')
   const [queryMode,setQueryMode]=useState<'nl'|'sql'>('nl')
@@ -1494,10 +1499,10 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 const PRESET_QUERIES = [
-  { id:'d1', name:'Revenue by Category', sql:`SELECT c.category_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM order_details od JOIN products p ON od.product_id=p.product_id JOIN categories c ON p.category_id=c.category_id GROUP BY c.category_name ORDER BY revenue DESC`, viz:'bar', w:460, h:240 },
-  { id:'d2', name:'Top 10 Customers', sql:`SELECT c.company_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM customers c JOIN orders o ON c.customer_id=o.customer_id JOIN order_details od ON o.order_id=od.order_id GROUP BY c.company_name ORDER BY revenue DESC LIMIT 10`, viz:'table', w:440, h:240 },
-  { id:'d3', name:'Orders by Country', sql:`SELECT ship_country, COUNT(*) AS orders FROM orders GROUP BY ship_country ORDER BY orders DESC LIMIT 8`, viz:'bar', w:360, h:240 },
-  { id:'d4', name:'Orders by Shipper', sql:`SELECT s.company_name AS shipper, COUNT(o.order_id) AS orders FROM orders o JOIN shippers s ON o.ship_via=s.shipper_id GROUP BY s.company_name`, viz:'pie', w:320, h:240 },
+  { id:'d1', name:'Revenue by Category', sql:`SELECT c.category_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM order_details od JOIN products p ON od.product_id=p.product_id JOIN categories c ON p.category_id=c.category_id GROUP BY c.category_name ORDER BY revenue DESC`, viz:'bar', w:460, h:260 },
+  { id:'d2', name:'Top 10 Customers', sql:`SELECT c.company_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM customers c JOIN orders o ON c.customer_id=o.customer_id JOIN order_details od ON o.order_id=od.order_id GROUP BY c.company_name ORDER BY revenue DESC LIMIT 10`, viz:'table', w:460, h:260 },
+  { id:'d3', name:'Monthly Orders 2026', sql:`SELECT TO_CHAR(order_date,'Mon') AS month, COUNT(*) AS orders FROM orders WHERE EXTRACT(YEAR FROM order_date)=2026 GROUP BY EXTRACT(MONTH FROM order_date), TO_CHAR(order_date,'Mon') ORDER BY EXTRACT(MONTH FROM order_date)`, viz:'line', w:440, h:260 },
+  { id:'d4', name:'Orders by Month & Shipper', sql:`SELECT TO_CHAR(o.order_date,'Mon') AS month, COUNT(CASE WHEN s.company_name='Federal Shipping' THEN 1 END) AS "Federal Shipping", COUNT(CASE WHEN s.company_name='Speedy Express' THEN 1 END) AS "Speedy Express", COUNT(CASE WHEN s.company_name='United Package' THEN 1 END) AS "United Package" FROM orders o JOIN shippers s ON o.ship_via=s.shipper_id GROUP BY EXTRACT(MONTH FROM o.order_date), TO_CHAR(o.order_date,'Mon') ORDER BY EXTRACT(MONTH FROM o.order_date)`, viz:'stacked', w:1390, h:300 },
 ]
 const PRESET_KPIS = [
   { id:'k1', name:'Total Revenue', sql:`SELECT ROUND(SUM(unit_price*quantity*(1-discount)),0) AS value FROM order_details`, prefix:'$' },
@@ -1506,7 +1511,7 @@ const PRESET_KPIS = [
   { id:'k4', name:'Avg Order Value', sql:`SELECT ROUND(AVG(t),0) AS value FROM (SELECT SUM(od.unit_price*od.quantity*(1-od.discount)) AS t FROM orders o JOIN order_details od ON o.order_id=od.order_id GROUP BY o.order_id) x`, prefix:'$' },
 ]
 
-type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'pie'|'table'|'kpi',w:number,h:number,color?:string,rows?:any[],fields?:string[]}
+type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi',w:number,h:number,color?:string,rows?:any[],fields?:string[]}
 type DashPage = {id:string,name:string,views:DashView[]}
 
 // ── Shared chart renderer ─────────────────────────────────────────────────────
@@ -1529,13 +1534,24 @@ function ViewChart({viz,rows,fields,color=C.accent,height=200}:{viz:string,rows:
       </table>
     </div>
   )
-  if(viz==='pie') return(
-    <ResponsiveContainer width="100%" height={height}>
-      <PieChart><Pie data={rows} dataKey={vk} nameKey={lk} cx="50%" cy="50%" outerRadius="68%" label={({name,percent}:any)=>`${String(name).slice(0,12)} ${(percent*100).toFixed(0)}%`} labelLine={false}>
-        {rows.map((_,i)=><Cell key={i} fill={GREEN_SHADES[i%GREEN_SHADES.length]}/>)}
-      </Pie><Tooltip formatter={(v:any)=>Number(v).toLocaleString()}/></PieChart>
-    </ResponsiveContainer>
-  )
+
+  if(viz==='stacked'){
+    // fields[0] = X axis label, fields[1..n] = stack segments
+    const stackKeys=fields.slice(1)
+    if(!fields.length||!rows.length) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:height,color:C.textLight,fontSize:13}}>No data</div>
+    return(
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={rows} margin={{top:4,right:8,left:0,bottom:30}}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" vertical={false}/>
+          <XAxis dataKey={lk} tick={{fontSize:10,fill:C.textLight}} angle={-20} textAnchor="end"/>
+          <YAxis tick={{fontSize:10,fill:C.textLight}} tickFormatter={(v:any)=>Number(v).toLocaleString()}/>
+          <Tooltip formatter={(v:any)=>Number(v).toLocaleString()}/>
+          <Legend wrapperStyle={{fontSize:11,paddingTop:8}}/>
+          {stackKeys.map((k,i)=><Bar key={k} dataKey={k} stackId="a" fill={GREEN_SHADES[i%GREEN_SHADES.length]} radius={i===stackKeys.length-1?[3,3,0,0]:[0,0,0,0]}/>)}
+        </BarChart>
+      </ResponsiveContainer>
+    )
+  }
   if(viz==='line') return(
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={rows} margin={{top:4,right:8,left:0,bottom:20}}>
@@ -1563,21 +1579,48 @@ function ViewChart({viz,rows,fields,color=C.accent,height=200}:{viz:string,rows:
 // ── KPI card ──────────────────────────────────────────────────────────────────
 function KpiCard({kpi}:{kpi:any}) {
   const [val,setVal]=useState<string|null>(null)
+  const [w,setW]=useState(340) // ← default width per KPI card (px)
+  const [h,setH]=useState(100)  // ← default height per KPI card (px)
+  // Max: w capped at 600px, h capped at 240px (see onMove below)
+  const startRef=useRef<{mx:number,my:number,sw:number,sh:number}|null>(null)
   useEffect(()=>{
     fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:kpi.sql})})
       .then(r=>r.json()).then(d=>{if(!d.error&&d.rows?.[0])setVal(String(Object.values(d.rows[0])[0]))}).catch(()=>{})
   },[kpi.id])
+  const onCornerMouseDown=(e:React.MouseEvent)=>{
+    e.preventDefault();e.stopPropagation()
+    startRef.current={mx:e.clientX,my:e.clientY,sw:w,sh:h}
+    const onMove=(ev:MouseEvent)=>{
+      ev.preventDefault()
+      if(!startRef.current)return
+      setW(snap(Math.max(140,Math.min(600,startRef.current.sw+(ev.clientX-startRef.current.mx)))))
+      setH(snap(Math.max(70,Math.min(240,startRef.current.sh+(ev.clientY-startRef.current.my)))))
+    }
+    const onUp=()=>{startRef.current=null;window.removeEventListener('mousemove',onMove);window.removeEventListener('mouseup',onUp)}
+    window.addEventListener('mousemove',onMove);window.addEventListener('mouseup',onUp)
+  }
+  const fontSize=Math.round(32*(h/90))
   return(
-    <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 22px',flex:1,minWidth:150}}>
-      <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>{kpi.name}</div>
-      <div style={{fontSize:32,fontWeight:800,color:C.text,letterSpacing:'-0.5px',lineHeight:1}}>
+    <div style={{position:'relative',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'14px 18px',width:w,height:h,flexShrink:0,overflow:'hidden',boxSizing:'border-box',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+      <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>{kpi.name}</div>
+      <div style={{fontSize:Math.max(18,Math.min(52,fontSize)),fontWeight:800,color:C.text,letterSpacing:'-0.5px',lineHeight:1}}>
         {val===null?<span style={{color:C.textLight,fontSize:18,fontWeight:400}}>—</span>:`${kpi.prefix}${Number(val).toLocaleString()}`}
+      </div>
+      <div onMouseDown={onCornerMouseDown} title="Drag to resize"
+        style={{position:'absolute',bottom:0,right:0,width:20,height:20,cursor:'se-resize',zIndex:10,display:'flex',alignItems:'flex-end',justifyContent:'flex-end',padding:'3px',userSelect:'none'}}>
+        <svg width="11" height="11" viewBox="0 0 11 11" style={{display:'block',opacity:.35}}>
+          <line x1="9" y1="1" x2="1" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+          <line x1="9" y1="5" x2="5" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
       </div>
     </div>
   )
 }
 
 // ── Resizable DashCard ────────────────────────────────────────────────────────
+const SNAP=20 // snap grid in px
+function snap(n:number){return Math.round(n/SNAP)*SNAP}
+
 function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit:()=>void}) {
   const [rows,setRows]=useState<any[]>(view.rows||[])
   const [fields,setFields]=useState<string[]>(view.fields||[])
@@ -1585,7 +1628,7 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
   const [menuOpen,setMenuOpen]=useState(false)
   const [w,setW]=useState(view.w)
   const [h,setH]=useState(view.h)
-  const drag=useRef<{sx:number,sy:number,sw:number,sh:number}|null>(null)
+  const startRef=useRef<{mx:number,my:number,sw:number,sh:number}|null>(null)
 
   useEffect(()=>{
     if(view.rows?.length){setRows(view.rows);setFields(view.fields||[]);setLoading(false);return}
@@ -1601,24 +1644,38 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
     return()=>document.removeEventListener('click',close)
   },[menuOpen])
 
-  const startResize=(e:React.MouseEvent)=>{
+  const onCornerMouseDown=(e:React.MouseEvent)=>{
     e.preventDefault()
-    drag.current={sx:e.clientX,sy:e.clientY,sw:w,sh:h}
-    const move=(ev:MouseEvent)=>{
-      if(!drag.current)return
-      setW(Math.max(260,Math.min(960,drag.current.sw+(ev.clientX-drag.current.sx))))
-      setH(Math.max(160,Math.min(640,drag.current.sh+(ev.clientY-drag.current.sy))))
+    e.stopPropagation()
+    startRef.current={mx:e.clientX,my:e.clientY,sw:w,sh:h}
+    const onMove=(ev:MouseEvent)=>{
+      ev.preventDefault()
+      if(!startRef.current)return
+      const newW=snap(Math.max(240,Math.min(1320,startRef.current.sw+(ev.clientX-startRef.current.mx))))
+      const newH=snap(Math.max(140,Math.min(800,startRef.current.sh+(ev.clientY-startRef.current.my))))
+      setW(newW)
+      setH(newH)
     }
-    const up=()=>{drag.current=null;window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',up)}
-    window.addEventListener('mousemove',move);window.addEventListener('mouseup',up)
+    const onUp=()=>{
+      startRef.current=null
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
   }
 
+  // For table viz: scale font/padding with card size
+  const tableScale=Math.max(0.8,Math.min(1.6,w/440))
+
   return(
-    <div style={{position:'relative',display:'inline-flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.05)',width:w,flexShrink:0}}>
+    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',width:w===9999?'100%':w,flexShrink:0,boxSizing:'border-box'}}>
+      {/* Header */}
       <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead,borderRadius:'10px 10px 0 0',flexShrink:0}}>
         <span style={{fontSize:12.5,fontWeight:600,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{view.name}</span>
         <div style={{position:'relative'}}>
-          <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,lineHeight:1,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1}}
+          <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
+            style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,lineHeight:1,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1}}
             onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
           {menuOpen&&(
             <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:148,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
@@ -1631,15 +1688,51 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
           )}
         </div>
       </div>
-      <div style={{padding:12,height:h,overflow:'hidden'}}>
+
+      {/* Chart area — fills exact h, no padding eating height */}
+      <div style={{width:'100%',height:h,overflow:'hidden',flexShrink:0}}>
         {loading
-          ?<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:C.textLight,fontSize:13}}><div style={{width:14,height:14,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading…</div>
-          :<ViewChart viz={view.viz} rows={rows} fields={fields} color={view.color||C.accent} height={h}/>}
+          ?<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:C.textLight,fontSize:13}}>
+            <div style={{width:14,height:14,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading…
+          </div>
+          :view.viz==='table'
+            ?<div style={{overflowY:'auto',overflowX:'auto',height:'100%'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:Math.round(12*tableScale)}}>
+                <thead style={{position:'sticky',top:0,zIndex:1}}>
+                  <tr style={{background:C.tableHead}}>
+                    {fields.map(f=><th key={f} style={{padding:`${Math.round(6*tableScale)}px ${Math.round(10*tableScale)}px`,textAlign:'left',fontSize:Math.round(10*tableScale),color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r,i)=><tr key={i} style={{background:i%2===0?'#fff':C.tableRowAlt,borderBottom:`1px solid #F1F5F9`}}>
+                    {fields.map(f=><td key={f} style={{padding:`${Math.round(5*tableScale)}px ${Math.round(10*tableScale)}px`,color:C.text,whiteSpace:'nowrap',fontSize:Math.round(12*tableScale)}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():String(r[f]??'')}</td>)}
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>
+            :<ViewChart viz={view.viz} rows={rows} fields={fields} color={view.color||C.accent} height={h}/>}
       </div>
-      {/* Resize handle */}
-      <div onMouseDown={startResize} title="Drag to resize"
-        style={{position:'absolute',bottom:2,right:2,width:16,height:16,cursor:'se-resize',display:'flex',alignItems:'center',justifyContent:'center',color:'#CBD5E1',fontSize:11,userSelect:'none'}}
-        onMouseOver={e=>e.currentTarget.style.color=C.accent} onMouseOut={e=>e.currentTarget.style.color='#CBD5E1'}>⇲</div>
+
+      {/* Corner resize handle */}
+      <div
+        onMouseDown={onCornerMouseDown}
+        title="Drag to resize"
+        style={{
+          position:'absolute',bottom:0,right:0,
+          width:20,height:20,
+          cursor:'se-resize',
+          zIndex:10,
+          display:'flex',alignItems:'flex-end',justifyContent:'flex-end',
+          padding:'3px',
+          userSelect:'none',
+        }}>
+        {/* Three diagonal lines — classic resize indicator */}
+        <svg width="11" height="11" viewBox="0 0 11 11" style={{display:'block',opacity:.45}}>
+          <line x1="9" y1="1" x2="1" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+          <line x1="9" y1="5" x2="5" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+          <line x1="9" y1="9" x2="9" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      </div>
     </div>
   )
 }
@@ -1724,7 +1817,7 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
     onClose()
   }
 
-  const VIZ_TYPES:[DashView['viz'],string][]=[['bar','Bar'],['line','Line'],['pie','Pie'],['table','Table'],['kpi','KPI']]
+  const VIZ_TYPES:[DashView['viz'],string][]=[['bar','Bar'],['line','Line'],['stacked','Stacked Bar'],['table','Table'],['kpi','KPI']]
 
   const ColButton=({col}:{col:typeof ALL_COLS[0]})=>{
     const key=`${col.table}.${col.n}`
@@ -1859,8 +1952,8 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
                 {previewErr&&<span style={{fontSize:11.5,color:C.danger,flex:1}}>{previewErr}</span>}
                 {!activeSQL&&!previewLoading&&!previewErr&&<span style={{fontSize:11.5,color:C.textLight}}>Select fields above to see a preview</span>}
               </div>
-              <div style={{flex:1,padding:16,overflow:'hidden'}}>
-                {previewRows.length>0&&<ViewChart viz={viz} rows={previewRows} fields={previewFields} height={undefined as any}/>}
+              <div style={{flex:1,padding:16,overflow:'hidden',minHeight:200}}>
+                {previewRows.length>0&&<ViewChart viz={viz} rows={previewRows} fields={previewFields} height={220}/>}
               </div>
             </div>
           </div>
@@ -1886,43 +1979,11 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
 }
 
 // ── Preset chart card with edit menu ─────────────────────────────────────────
-function PresetCard({preset,onEdit}:{preset:any,onEdit:()=>void}) {
-  const [rows,setRows]=useState<any[]>([])
-  const [fields,setFields]=useState<string[]>([])
-  const [loading,setLoading]=useState(true)
-  const [menuOpen,setMenuOpen]=useState(false)
-
-  useEffect(()=>{
-    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:preset.sql})})
-      .then(r=>r.json()).then(d=>{if(!d.error){setRows(d.rows||[]);setFields(d.fields||[])}}).finally(()=>setLoading(false))
-  },[preset.id])
-
-  useEffect(()=>{
-    const close=()=>setMenuOpen(false)
-    if(menuOpen)document.addEventListener('click',close)
-    return()=>document.removeEventListener('click',close)
-  },[menuOpen])
-
+function PresetCard({preset,onEdit,fullWidth=false}:{preset:any,onEdit:()=>void,fullWidth?:boolean}) {
+  const view:DashView={id:preset.id,name:preset.name,sql:preset.sql,viz:preset.viz as any,w:fullWidth?9999:preset.w,h:preset.h}
   return(
-    <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,overflow:'hidden',width:preset.w,flexShrink:0}}>
-      <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead}}>
-        <span style={{fontSize:12.5,fontWeight:600,color:C.text,flex:1}}>{preset.name}</span>
-        <div style={{position:'relative'}}>
-          <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,lineHeight:1,padding:'2px 6px',fontWeight:700,letterSpacing:1}}
-            onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
-          {menuOpen&&(
-            <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:148,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
-              <button onClick={()=>{onEdit();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>✏️ Edit visual</button>
-            </div>
-          )}
-        </div>
-      </div>
-      <div style={{padding:12,height:preset.h}}>
-        {loading
-          ?<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:C.textLight,fontSize:13}}>Loading…</div>
-          :<ViewChart viz={preset.viz} rows={rows} fields={fields} height={preset.h}/>}
-      </div>
+    <div style={fullWidth?{width:'100%'}:{}}>
+      <DashCard view={view} onRemove={()=>{}} onEdit={onEdit}/>
     </div>
   )
 }
@@ -2011,11 +2072,14 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
             <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
               {PRESET_KPIS.map(kpi=><KpiCard key={kpi.id} kpi={kpi}/>)}
             </div>
-            <div style={{display:'flex',flexWrap:'wrap',gap:14,marginBottom:customViews.length?20:0}}>
-              {PRESET_QUERIES.map(p=>(
+            <div style={{display:'flex',flexWrap:'wrap',gap:14,marginBottom:14}}>
+              {PRESET_QUERIES.slice(0,3).map(p=>(
                 <PresetCard key={p.id} preset={p} onEdit={()=>openBuilder({id:p.id,name:p.name,sql:p.sql,viz:p.viz as any,w:p.w,h:p.h})}/>
               ))}
             </div>
+            {/* Stacked bar — full width */}
+            <div style={{marginBottom:customViews.length?20:0, maxWidth:1350}}>
+              <PresetCard key={PRESET_QUERIES[3].id} preset={PRESET_QUERIES[3]} onEdit={()=>openBuilder({id:PRESET_QUERIES[3].id,name:PRESET_QUERIES[3].name,sql:PRESET_QUERIES[3].sql,viz:PRESET_QUERIES[3].viz as any,w:PRESET_QUERIES[3].w,h:PRESET_QUERIES[3].h})}/>            </div>
             {customViews.length>0&&(
               <div>
                 <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:12}}>Custom visuals</div>
@@ -2045,10 +2109,92 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
   )
 }
 
+// ── Tutorial Overlay ──────────────────────────────────────────────────────────
+// ── Tutorial Overlay ──────────────────────────────────────────────────────────
+const TOUR_STEPS = [
+  { tab:'ask', icon:'💬', title:'Ask your data anything',
+    body:'Type a question in plain English at the bottom — "Top 10 customers by revenue" or "Products below reorder level". Qwezy writes the SQL and runs it instantly.',
+    tip:'Try the starter questions on screen, or switch to SQL mode for direct queries.' },
+  { tab:'builder', icon:'🔧', title:'Build queries without code',
+    body:'Click columns on the left to add them to your query. Set filters, group by, and ordering. Qwezy writes the SQL for you — click "View SQL" to inspect it.',
+    tip:'Use the resize handle at the bottom of the results panel to make it taller.' },
+  { tab:'dashboard', icon:'📊', title:'Build live dashboards',
+    body:'The Overview page loads KPIs and charts automatically. Click "+ Add visual" to create your own. Pick X and Y fields, choose a chart type, and see a live preview before adding.',
+    tip:'Drag the bar at the bottom of any card to resize it. Click ··· to edit or remove.' },
+  { tab:'reports', icon:'📋', title:'Schedule and share reports',
+    body:'Save any SQL as a report with a schedule. Run it on demand or automatically. Use ··· to email results to your team, export CSV, or connect to PowerBI and Tableau.',
+    tip:'Email and CSV auto-run the query first if no cached data exists.' },
+  { tab:'explorer', icon:'🔍', title:'Explore your database',
+    body:'Browse every table and column. Click a table card for details, sample questions and join paths. Right-click for quick actions. Click "View top 100 rows" to preview instantly.',
+    tip:'Use the search bar to find any field across all tables at once.' },
+]
+
+function TourOverlay({onFinish,onTabSwitch}:{onFinish:()=>void,onTabSwitch:(tab:string)=>void}) {
+  const [step,setStep]=useState(0)
+  const current=TOUR_STEPS[step]
+  const isLast=step===TOUR_STEPS.length-1
+
+  const goTo=(i:number)=>{setStep(i);onTabSwitch(TOUR_STEPS[i].tab)}
+  const next=()=>isLast?onFinish():goTo(step+1)
+  const prev=()=>step>0&&goTo(step-1)
+
+  return(
+    <div style={{position:'fixed',inset:0,zIndex:1000,pointerEvents:'none'}}>
+      <div style={{position:'absolute',inset:0,background:'rgba(2,44,34,0.6)',pointerEvents:'all'}} onClick={e=>e.stopPropagation()}/>
+      <div style={{position:'absolute',bottom:28,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:500,pointerEvents:'all',padding:'0 16px'}}>
+        <div style={{background:'#fff',borderRadius:14,boxShadow:'0 20px 56px rgba(0,0,0,0.28)',overflow:'hidden'}}>
+          <div style={{height:3,background:'#E5E7EB'}}>
+            <div style={{height:'100%',background:C.accent,transition:'width .3s',width:`${((step+1)/TOUR_STEPS.length)*100}%`}}/>
+          </div>
+          <div style={{padding:'20px 22px 16px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
+              <div style={{fontSize:22,flexShrink:0}}>{current.icon}</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:1}}>Step {step+1} of {TOUR_STEPS.length}</div>
+                <div style={{fontSize:15,fontWeight:700,color:C.text,letterSpacing:'-0.2px'}}>{current.title}</div>
+              </div>
+              <div style={{display:'flex',gap:4}}>
+                {TOUR_STEPS.map((_,i)=>(
+                  <div key={i} onClick={()=>goTo(i)} style={{width:i===step?18:7,height:7,borderRadius:4,background:i===step?C.accent:i<step?C.greenBorder:'#E5E7EB',transition:'all .2s',cursor:'pointer'}}/>
+                ))}
+              </div>
+            </div>
+            <p style={{fontSize:13.5,color:C.textMuted,lineHeight:1.7,marginBottom:10}}>{current.body}</p>
+            <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:7,padding:'8px 12px',marginBottom:16,display:'flex',gap:8,alignItems:'flex-start'}}>
+              <span style={{fontSize:13,flexShrink:0}}>💡</span>
+              <span style={{fontSize:12.5,color:C.accentDark,lineHeight:1.55}}>{current.tip}</span>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <button onClick={onFinish} style={{fontSize:12.5,color:C.textLight,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',textDecoration:'underline',textUnderlineOffset:2}}>Skip tour</button>
+              <div style={{flex:1}}/>
+              {step>0&&<button onClick={prev} style={{background:'#F0F4F8',color:C.text,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 16px',fontSize:13,fontWeight:500,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>← Back</button>}
+              <button onClick={next} style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'8px 22px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+                {isLast?'Get started →':'Next →'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const router=useRouter()
-  const [tab,setTab]=useState<string>(()=>{try{return sessionStorage.getItem('qwezy_tab')||'ask'}catch{return 'ask'}})
+  const [tab,setTab]=useState<string>('ask')
+  const [showTour,setShowTour]=useState(false)
+
+  // Sync tab + tour from sessionStorage after mount (avoids SSR hydration mismatch)
+  useEffect(()=>{
+    try{
+      const savedTab=sessionStorage.getItem('qwezy_tab')
+      if(savedTab)setTab(savedTab)
+      const tourDone=sessionStorage.getItem('qwezy_tour_done')
+      if(tourDone!=='1')setShowTour(true)
+    }catch{}
+  },[])
   const [drawerTable,setDrawerTable]=useState<any>(null)
   const [previewTable,setPreviewTable]=useState<any>(null)
   const [contextMenu,setContextMenu]=useState<{x:number,y:number,table:any}|null>(null)
@@ -2124,6 +2270,7 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
+        <button onClick={()=>{setShowTour(true);try{sessionStorage.removeItem('qwezy_tour_done')}catch{}}} style={{fontSize:12.5,color:C.navText,background:'none',border:`1px solid ${C.navBorder}`,borderRadius:5,padding:'4px 10px',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0,marginRight:6}} title="Take a tour">?</button>
         <button onClick={signOut} style={{fontSize:12.5,color:C.navText,background:'none',border:`1px solid ${C.navBorder}`,borderRadius:5,padding:'4px 11px',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0}}>Sign out</button>
       </nav>
 
@@ -2223,6 +2370,7 @@ export default function Dashboard() {
       {drawerTable&&<TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
       {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}}/>}
+      {showTour&&<TourOverlay onFinish={()=>{setShowTour(false);try{sessionStorage.setItem('qwezy_tour_done','1')}catch{}}} onTabSwitch={t=>setTab(t)}/>}
     </div>
   )
 }
