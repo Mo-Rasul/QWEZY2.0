@@ -83,28 +83,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Account not found. Please sign up again.' }, { status: 400 })
     }
 
-    // Always set the demo password to ensure sign-in works
-    await supabaseAdmin.auth.admin.updateUserById(authUser.id, { password: DEMO_PASSWORD })
+    // Generate a magic link and extract the token — no password needed
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'magiclink',
+      email,
+    })
 
-    // Small delay to let Supabase propagate the password change
-    await new Promise(r => setTimeout(r, 500))
+    if (linkError || !linkData?.properties?.hashed_token) {
+      return NextResponse.json({ error: 'Could not create session. Please try again.' }, { status: 500 })
+    }
 
-    // Sign user in with demo password to get a real session
+    // Exchange the token for a session using the public client
     const supabasePublic = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
-    const { data: signIn, error: signInErr } = await supabasePublic.auth.signInWithPassword({
-      email, password: DEMO_PASSWORD
+
+    const { data: sessionData, error: sessionError } = await supabasePublic.auth.verifyOtp({
+      token_hash: linkData.properties.hashed_token,
+      type: 'magiclink',
     })
 
-    if (signInErr || !signIn.session) {
-      return NextResponse.json({ error: 'Could not create session.' }, { status: 500 })
+    if (sessionError || !sessionData.session) {
+      return NextResponse.json({ error: 'Could not create session. Please try again.' }, { status: 500 })
     }
 
     // Ensure user assigned to Velo demo company
     await supabaseAdmin.from('users').upsert({
-      id: signIn.user!.id, company_id: DEMO_COMPANY_ID,
+      id: authUser.id, company_id: DEMO_COMPANY_ID,
       email, name: name || email.split('@')[0],
       role: 'analyst', status: 'active',
     }, { onConflict: 'id' })
@@ -115,7 +121,7 @@ export async function POST(req: NextRequest) {
       httpOnly: true, secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const, maxAge: 60 * 60 * 24 * 7, path: '/',
     }
-    res.cookies.set('qwezy_session', signIn.session.access_token, opts)
+    res.cookies.set('qwezy_session', sessionData.session.access_token, opts)
     res.cookies.set('qwezy_company', DEMO_COMPANY_ID, opts)
     return res
   }
