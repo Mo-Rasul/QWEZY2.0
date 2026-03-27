@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
 const C = {
@@ -16,6 +16,35 @@ export default function AuthPage() {
   const [error, setError] = useState('')
   const [mode, setMode] = useState<'signin'|'reset'>('signin')
   const [resetSent, setResetSent] = useState(false)
+
+  // ← ADD THIS BLOCK HERE
+  useEffect(() => {
+    const hash = window.location.hash
+    if (!hash.includes('access_token')) return
+    const params = new URLSearchParams(hash.replace('#', ''))
+    const accessToken = params.get('access_token')
+    if (!accessToken) return
+    setLoading(true)
+    fetch('/api/auth/callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: accessToken, email: '' })
+    }).then(res => res.json()).then(data => {
+      if (data.ok) {
+        window.location.href = '/dashboard'
+      } else {
+        setError('Link expired. Please request a new one.')
+        setLoading(false)
+      }
+    }).catch(() => {
+      setError('Something went wrong.')
+      setLoading(false)
+    })
+  }, [])
+
+
+
+
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
