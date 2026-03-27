@@ -45,8 +45,7 @@ export async function POST(req: NextRequest) {
     res.cookies.set('qwezy_company', profile.company_id, cookieOpts)
 
     // Update last_seen
-    supabaseAdmin.from('users').update({ last_seen: new Date().toISOString() }).eq('id', user.id).then(() => {}).catch(() => {})
-
+    try { await supabaseAdmin.from('users').update({ last_seen: new Date().toISOString() }).eq('id', user.id) } catch {}
     return res
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
