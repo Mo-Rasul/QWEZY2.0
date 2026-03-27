@@ -75,53 +75,27 @@ export async function POST(req: NextRequest) {
     // Mark code as used
     await supabaseAdmin.from('otp_codes' as any).update({ used: true }).eq('email', email)
 
-    // Find user in auth
-    const { data: { users: authUsers } } = await supabaseAdmin.auth.admin.listUsers()
-    const authUser = authUsers.find((u: any) => u.email === email)
-
-    if (!authUser) {
-      return NextResponse.json({ error: 'Account not found. Please sign up again.' }, { status: 400 })
-    }
-
-    // Generate a magic link and extract the token — no password needed
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email,
-    })
-
-    if (linkError || !linkData?.properties?.hashed_token) {
-      return NextResponse.json({ error: 'Could not create session. Please try again.' }, { status: 500 })
-    }
-
-    // Exchange the token for a session using the public client
+    // Code is correct — sign into shared Velo demo account
     const supabasePublic = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
 
-    const { data: sessionData, error: sessionError } = await supabasePublic.auth.verifyOtp({
-      token_hash: linkData.properties.hashed_token,
-      type: 'magiclink',
+    const { data: signIn, error: signInErr } = await supabasePublic.auth.signInWithPassword({
+      email: 'velo@demo.qwezy.io',
+      password: 'Qwezy123!'
     })
 
-    if (sessionError || !sessionData.session) {
-      return NextResponse.json({ error: 'Could not create session. Please try again.' }, { status: 500 })
+    if (signInErr || !signIn.session) {
+      return NextResponse.json({ error: 'Could not access demo. Please try again.' }, { status: 500 })
     }
 
-    // Ensure user assigned to Velo demo company
-    await supabaseAdmin.from('users').upsert({
-      id: authUser.id, company_id: DEMO_COMPANY_ID,
-      email, name: name || email.split('@')[0],
-      role: 'analyst', status: 'active',
-    }, { onConflict: 'id' })
-
-    // Set session cookies
-    const res = NextResponse.json({ ok: true, name: name || email.split('@')[0] })
+    const res = NextResponse.json({ ok: true })
     const opts = {
       httpOnly: true, secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const, maxAge: 60 * 60 * 24 * 7, path: '/',
     }
-    res.cookies.set('qwezy_session', sessionData.session.access_token, opts)
+    res.cookies.set('qwezy_session', signIn.session.access_token, opts)
     res.cookies.set('qwezy_company', DEMO_COMPANY_ID, opts)
     return res
   }
