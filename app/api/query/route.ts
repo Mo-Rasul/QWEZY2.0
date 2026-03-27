@@ -1,103 +1,111 @@
-// app/api/reports/schedule/route.ts
-// Runs due scheduled reports and emails results.
-// Call this from a cron job (Vercel cron, GitHub Actions, etc.) daily.
-// Endpoint: GET /api/reports/schedule?secret=YOUR_CRON_SECRET
-
+// app/api/query/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase-app'
-import { runSQL } from '@/lib/db'
-import { sendScheduledReport } from '@/lib/email'
-import { logError } from '@/lib/rate-limit'
+import Anthropic from '@anthropic-ai/sdk'
+import { Pool } from 'pg'
 
-export async function GET(req: NextRequest) {
-  // Protect with a secret
-  const secret = req.nextUrl.searchParams.get('secret')
-  if (secret !== process.env.CRON_SECRET && process.env.NODE_ENV === 'production') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+const DEMO_DB_URL = process.env.DEMO_DATABASE_URL!
+
+async function runSQL(sql: string): Promise<{ rows: any[], fields: string[], duration_ms: number }> {
+  const pool = new Pool({ connectionString: DEMO_DB_URL, ssl: { rejectUnauthorized: false }, max: 3 })
+  const start = Date.now()
+  try {
+    const client = await pool.connect()
+    const result = await client.query(sql)
+    client.release()
+    await pool.end()
+    return {
+      rows: result.rows,
+      fields: result.fields.map((f: any) => f.name),
+      duration_ms: Date.now() - start,
+    }
+  } catch (err) {
+    await pool.end().catch(() => {})
+    throw err
   }
+}
 
-  const now = new Date()
-  const dayOfWeek = now.getDay()   // 0=Sun
-  const dayOfMonth = now.getDate()
-  const hour = now.getHours()
+const SYSTEM_PROMPT = `You are Qwezy, a SQL assistant for the Northwind demo database (PostgreSQL).
 
-  // Only run once a day at a reasonable hour
-  if (hour !== 7 && process.env.NODE_ENV === 'production') {
-    return NextResponse.json({ message: 'Not scheduled hour', skipped: true })
-  }
+Available tables: orders, order_details, customers, employees, products, categories, suppliers, shippers
 
-  // Get all active scheduled reports
-  const { data: reports } = await supabaseAdmin
-    .from('reports')
-    .select('*,companies(id,plan)')
-    .neq('schedule', 'manual')
-    .eq('shared', true)
+Key relationships:
+- orders.customer_id → customers.customer_id
+- orders.employee_id → employees.employee_id  
+- orders.ship_via → shippers.shipper_id
+- order_details.order_id → orders.order_id
+- order_details.product_id → products.product_id
+- products.category_id → categories.category_id
+- products.supplier_id → suppliers.supplier_id
 
-  let sent = 0, failed = 0, skipped = 0
+Rules:
+- Always return valid PostgreSQL SQL
+- Use table aliases for clarity
+- Revenue = SUM(unit_price * quantity * (1 - discount))
+- Return ONLY a JSON object, no markdown, no explanation
 
-  for (const report of (reports || [])) {
-    // Check if this report should run today
-    const shouldRun =
-      report.schedule === 'daily' ||
-      (report.schedule === 'weekly'  && dayOfWeek === 1) ||   // Mondays
-      (report.schedule === 'monthly' && dayOfMonth === 1)     // 1st of month
+Response format:
+{"sql": "SELECT ...", "confidence": "high", "assumptions": []}`
 
-    if (!shouldRun) { skipped++; continue }
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json()
+    const { question, customSQL, conversationId, memoryContext } = body
 
-    // Check if company plan allows scheduled reports
-    const { data: planLimits } = await supabaseAdmin
-      .from('plan_limits').select('can_schedule').eq('plan', report.companies?.plan || 'starter').single()
-    if (!planLimits?.can_schedule) { skipped++; continue }
+    if (!question?.trim() && !customSQL?.trim()) {
+      return NextResponse.json({ error: 'Question is required' }, { status: 400 })
+    }
 
-    try {
-      // Run the query
-      const result = await runSQL(report.sql_query, report.company_id)
+    let sql = customSQL?.trim() || ''
+    let confidence = 'high'
+    let assumptions: string[] = []
 
-      // Cache the result
-      await supabaseAdmin.from('report_results').insert({
-        report_id: report.id,
-        company_id: report.company_id,
-        rows_data: result.rows.slice(0,500),
-        fields: result.fields,
-        ran_at: now.toISOString(),
+    // Generate SQL from question if no custom SQL provided
+    if (!sql) {
+      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+      
+      const context = memoryContext ? `\n\nConversation context:\n${memoryContext}` : ''
+      
+      const message = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: `${question}${context}` }],
       })
 
-      // Update last_run
-      await supabaseAdmin.from('reports')
-        .update({ last_run: now.toISOString() })
-        .eq('id', report.id)
-
-      // Get company users with admin/analyst roles for delivery
-      const { data: users } = await supabaseAdmin
-        .from('users')
-        .select('email,name')
-        .eq('company_id', report.company_id)
-        .in('role', ['admin','analyst'])
-        .eq('status', 'active')
-
-      // Send to each user
-      for (const user of (users || [])) {
-        const emailSent = await sendScheduledReport(
-          user.email,
-          report.name,
-          report.companies?.name || 'Your company',
-          result.rows,
-          result.fields,
-          now.toISOString()
-        )
-        if (emailSent) sent++
+      const raw = message.content[0].type === 'text' ? message.content[0].text : ''
+      
+      try {
+        const clean = raw.replace(/```json|```/g, '').trim()
+        const parsed = JSON.parse(clean)
+        sql = parsed.sql || ''
+        confidence = parsed.confidence || 'high'
+        assumptions = parsed.assumptions || []
+      } catch {
+        // Try to extract SQL directly
+        const match = raw.match(/SELECT[\s\S]+?;?$/im)
+        sql = match ? match[0] : ''
       }
 
-    } catch (err: any) {
-      failed++
-      await logError({
-        companyId: report.company_id, route: '/api/reports/schedule',
-        errorType: 'scheduled_report_failed', message: err.message,
-        stack: err.stack, severity: 'error',
-        context: { reportId: report.id, reportName: report.name }
-      })
+      if (!sql) {
+        return NextResponse.json({ error: 'Could not generate SQL for that question.' }, { status: 400 })
+      }
     }
-  }
 
-  return NextResponse.json({ sent, failed, skipped, total: reports?.length || 0 })
+    // Run the query
+    const result = await runSQL(sql)
+
+    return NextResponse.json({
+      sql,
+      rows: result.rows.slice(0, 500),
+      fields: result.fields,
+      row_count: result.rows.length,
+      duration_ms: result.duration_ms,
+      confidence,
+      assumptions,
+    })
+
+  } catch (err: any) {
+    console.error('Query error:', err.message)
+    return NextResponse.json({ error: err.message || 'Query failed' }, { status: 500 })
+  }
 }
