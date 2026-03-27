@@ -62,7 +62,7 @@ function LeadForm({ onClose }: { onClose: () => void }) {
         body: JSON.stringify(form)
       })
       const data = await res.json()
-      if (data.immediateLogin) {
+      if (data.immediateLogin || data.ok) {
         window.location.href = '/dashboard'
       } else {
         setStep('done')
