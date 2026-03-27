@@ -47,12 +47,15 @@ function useTypingEffect(strings: string[], typingSpeed=40, pauseMs=2200) {
 
 function LeadForm({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState({ name:'', email:'', company:'', role:'', teamSize:'', industry:'', useCase:'' })
-  const [step, setStep] = useState<'form'|'done'>('form')
+  const [step, setStep] = useState<'form'|'code'|'welcome'>('form')
+  const [code, setCode] = useState(['','','','','',''])
+  const [codeError, setCodeError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [userName, setUserName] = useState('')
   const set = (k: string, v: string) => setForm(p => ({...p, [k]:v}))
   const ready = !!form.name && !!form.email && !!form.company && !!form.role
 
-  const submit = async (e: React.FormEvent) => {
+  const submitForm = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
@@ -61,96 +64,226 @@ function LeadForm({ onClose }: { onClose: () => void }) {
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify(form)
       })
-      await res.json()
-      setStep('done')
+      const data = await res.json()
+      if (data.codeSent) {
+        setStep('code')
+      } else {
+        setCodeError(data.error || 'Something went wrong')
+      }
     } catch {
-      setStep('done')
+      setCodeError('Something went wrong. Please try again.')
     }
     setLoading(false)
+  }
+
+  const submitCode = async () => {
+    const fullCode = code.join('')
+    if (fullCode.length !== 6) return
+    setLoading(true)
+    setCodeError('')
+    try {
+      const res = await fetch('/api/demo-access', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ action:'verify', email: form.email, name: form.name, code: fullCode })
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setUserName(data.name || form.name.split(' ')[0])
+        setStep('welcome')
+        setTimeout(() => { window.location.href = '/dashboard' }, 2200)
+      } else {
+        setCodeError(data.error || 'Invalid code. Please try again.')
+        setCode(['','','','','',''])
+      }
+    } catch {
+      setCodeError('Something went wrong. Please try again.')
+    }
+    setLoading(false)
+  }
+
+  const handleCodeInput = (i: number, val: string) => {
+    if (!/^[0-9]*$/.test(val)) return
+    const newCode = [...code]
+    newCode[i] = val.slice(-1)
+    setCode(newCode)
+    if (val && i < 5) {
+      const next = document.getElementById(`otp-${i+1}`)
+      if (next) (next as HTMLInputElement).focus()
+    }
+    if (newCode.every(d => d !== '') && val) {
+      setTimeout(() => {
+        const fullCode = newCode.join('')
+        setLoading(true)
+        setCodeError('')
+        fetch('/api/demo-access', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ action:'verify', email: form.email, name: form.name, code: fullCode })
+        }).then(r=>r.json()).then(data => {
+          if (data.ok) {
+            setUserName(data.name || form.name.split(' ')[0])
+            setStep('welcome')
+            setTimeout(() => { window.location.href = '/dashboard' }, 2200)
+          } else {
+            setCodeError(data.error || 'Invalid code. Please try again.')
+            setCode(['','','','','',''])
+            setLoading(false)
+          }
+        }).catch(() => { setCodeError('Something went wrong.'); setLoading(false) })
+      }, 100)
+    }
+  }
+
+  const handleCodeKeyDown = (i: number, e: React.KeyboardEvent) => {
+    if (e.key === 'Backspace' && !code[i] && i > 0) {
+      const prev = document.getElementById(`otp-${i-1}`)
+      if (prev) (prev as HTMLInputElement).focus()
+    }
   }
 
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
       <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:500,maxHeight:'92vh',overflow:'auto',boxShadow:'0 24px 64px rgba(0,0,0,0.2)'}}>
-        <div style={{padding:'20px 24px',borderBottom:'1px solid #F3F4F6',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,background:'#fff',zIndex:1}}>
-          <div>
-            <div style={{fontWeight:700,fontSize:16,color:C.text}}>Try Qwezy free</div>
-            <div style={{fontSize:12.5,color:C.textLight,marginTop:1}}>Get instant access to a live demo environment</div>
-          </div>
-          <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:C.textLight,cursor:'pointer',lineHeight:1}}>x</button>
-        </div>
 
-        {step==='done' ? (
-          <div style={{padding:36,textAlign:'center'}}>
-            <div style={{width:56,height:56,borderRadius:'50%',background:C.accentBg,border:`2px solid ${C.accent}`,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 16px',fontSize:22,color:C.accent}}>✉</div>
-            <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:6}}>Check your email</div>
-            <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:10}}>
-              We sent a link to <strong style={{color:C.text}}>{form.email}</strong>.<br/>
-              Click it to open your live demo instantly.
-            </div>
-            <div style={{fontSize:13,color:C.textLight,marginBottom:24}}>The link works anytime - bookmark it for easy return access.</div>
-            <button onClick={onClose} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Got it</button>
+        {/* Welcome screen */}
+        {step==='welcome' && (
+          <div style={{padding:48,textAlign:'center'}}>
+            <div style={{width:64,height:64,borderRadius:'50%',background:C.accentBg,border:`2px solid ${C.accent}`,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px',fontSize:28}}>✓</div>
+            <div style={{fontSize:22,fontWeight:800,color:C.text,marginBottom:8}}>Welcome, {userName}!</div>
+            <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:20}}>Taking you to your live demo environment...</div>
+            <div style={{width:28,height:28,border:`3px solid ${C.accentBg}`,borderTop:`3px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite',margin:'0 auto'}}/>
+            <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
           </div>
-        ) : (
-          <form onSubmit={submit} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Full name</label>
-                <input value={form.name} onChange={e=>set('name',e.target.value)} placeholder="Jane Smith" required
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
-                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-              </div>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Work email</label>
-                <input type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="jane@company.com" required
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
-                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+        )}
+
+        {/* Code entry screen */}
+        {step==='code' && (
+          <div style={{padding:'28px 28px'}}>
+            <div style={{marginBottom:24}}>
+              <button onClick={()=>setStep('form')} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,marginBottom:16,padding:0,display:'flex',alignItems:'center',gap:5}}>← Back</button>
+              <div style={{fontWeight:700,fontSize:18,color:C.text,marginBottom:6}}>Check your email</div>
+              <div style={{fontSize:13.5,color:C.textMuted,lineHeight:1.6}}>
+                We sent a 6-digit code to <strong style={{color:C.text}}>{form.email}</strong>. Enter it below to access your demo.
               </div>
             </div>
-            <div>
-              <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Company</label>
-              <input value={form.company} onChange={e=>set('company',e.target.value)} placeholder="Acme Inc." required
-                style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
-                onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+
+            <div style={{display:'flex',gap:8,justifyContent:'center',marginBottom:20}}>
+              {code.map((digit, i) => (
+                <input
+                  key={i}
+                  id={`otp-${i}`}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={1}
+                  value={digit}
+                  onChange={e => handleCodeInput(i, e.target.value)}
+                  onKeyDown={e => handleCodeKeyDown(i, e)}
+                  autoFocus={i === 0}
+                  style={{
+                    width:48, height:56, borderRadius:8, textAlign:'center',
+                    border:`2px solid ${digit ? C.accent : '#E5E7EB'}`,
+                    fontSize:22, fontWeight:700, color:C.text,
+                    fontFamily:"'JetBrains Mono',monospace",
+                    outline:'none', transition:'border-color .15s',
+                    background: digit ? C.accentBg : '#fff',
+                  }}
+                  onFocus={e => e.target.style.borderColor=C.accent}
+                  onBlur={e => e.target.style.borderColor=digit ? C.accent : '#E5E7EB'}
+                />
+              ))}
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Your role</label>
-                <select value={form.role} onChange={e=>set('role',e.target.value)} required
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.role?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                  <option value="">Select...</option>
-                  {['Data Analyst','Data Engineer','BI / Analytics Lead','Product Manager','Engineering','CEO / Founder','Finance','Operations','Other'].map(r=><option key={r}>{r}</option>)}
-                </select>
+
+            {codeError && (
+              <div style={{padding:'9px 12px',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:7,fontSize:13,color:'#EF4444',marginBottom:14,textAlign:'center'}}>
+                {codeError}
               </div>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Team size</label>
-                <select value={form.teamSize} onChange={e=>set('teamSize',e.target.value)}
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.teamSize?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                  <option value="">Select...</option>
-                  {['Just me','2-5','6-20','21-100','100+'].map(s=><option key={s}>{s}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Industry</label>
-              <select value={form.industry} onChange={e=>set('industry',e.target.value)}
-                style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.industry?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                <option value="">Select...</option>
-                {['SaaS / Software','E-commerce / Retail','Finance / Fintech','Media & Entertainment','Healthcare','Manufacturing','Logistics','Real Estate','Other'].map(i=><option key={i}>{i}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Primary use case</label>
-              <textarea value={form.useCase} onChange={e=>set('useCase',e.target.value)} placeholder="e.g. Revenue reporting, customer analytics..." rows={2}
-                style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif',resize:'vertical',lineHeight:1.5}}
-                onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-            </div>
-            <button type="submit" disabled={!ready||loading}
-              style={{background:ready&&!loading?C.accent:'#E5E7EB',color:ready&&!loading?'#fff':C.textLight,border:'none',borderRadius:8,padding:'12px',fontSize:15,fontWeight:700,cursor:ready&&!loading?'pointer':'default',fontFamily:'Inter,sans-serif',marginTop:4}}>
-              {loading?'Setting up your demo...':'Open live demo'}
+            )}
+
+            <button onClick={submitCode} disabled={loading || code.join('').length !== 6}
+              style={{width:'100%',background:code.join('').length===6&&!loading?C.accent:'#E5E7EB',color:code.join('').length===6&&!loading?'#fff':C.textLight,border:'none',borderRadius:8,padding:'12px',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',marginBottom:14}}>
+              {loading ? 'Verifying...' : 'Verify and enter demo'}
             </button>
-            <div style={{fontSize:12,color:C.textLight,textAlign:'center'}}>No spam. We will reach out personally within one business day.</div>
-          </form>
+
+            <div style={{textAlign:'center',fontSize:13,color:C.textLight}}>
+              Didn't get a code?{' '}
+              <button onClick={submitForm} style={{background:'none',border:'none',color:C.accent,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,fontWeight:600,textDecoration:'underline'}}>
+                Resend
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Main form */}
+        {step==='form' && (
+          <>
+            <div style={{padding:'20px 24px',borderBottom:'1px solid #F3F4F6',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,background:'#fff',zIndex:1}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:16,color:C.text}}>Try Qwezy free</div>
+                <div style={{fontSize:12.5,color:C.textLight,marginTop:1}}>Get instant access to a live demo environment</div>
+              </div>
+              <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:C.textLight,cursor:'pointer',lineHeight:1}}>x</button>
+            </div>
+            <form onSubmit={submitForm} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Full name</label>
+                  <input value={form.name} onChange={e=>set('name',e.target.value)} placeholder="Jane Smith" required
+                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
+                    onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+                </div>
+                <div>
+                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Work email</label>
+                  <input type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="jane@company.com" required
+                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
+                    onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+                </div>
+              </div>
+              <div>
+                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Company</label>
+                <input value={form.company} onChange={e=>set('company',e.target.value)} placeholder="Acme Inc." required
+                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
+                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Your role</label>
+                  <select value={form.role} onChange={e=>set('role',e.target.value)} required
+                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.role?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
+                    <option value="">Select...</option>
+                    {['Data Analyst','Data Engineer','BI / Analytics Lead','Product Manager','Engineering','CEO / Founder','Finance','Operations','Other'].map(r=><option key={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Team size</label>
+                  <select value={form.teamSize} onChange={e=>set('teamSize',e.target.value)}
+                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.teamSize?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
+                    <option value="">Select...</option>
+                    {['Just me','2-5','6-20','21-100','100+'].map(s=><option key={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Industry</label>
+                <select value={form.industry} onChange={e=>set('industry',e.target.value)}
+                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.industry?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
+                  <option value="">Select...</option>
+                  {['SaaS / Software','E-commerce / Retail','Finance / Fintech','Media & Entertainment','Healthcare','Manufacturing','Logistics','Real Estate','Other'].map(i=><option key={i}>{i}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Primary use case</label>
+                <textarea value={form.useCase} onChange={e=>set('useCase',e.target.value)} placeholder="e.g. Revenue reporting, customer analytics..." rows={2}
+                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif',resize:'vertical',lineHeight:1.5}}
+                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+              </div>
+              <button type="submit" disabled={!ready||loading}
+                style={{background:ready&&!loading?C.accent:'#E5E7EB',color:ready&&!loading?'#fff':C.textLight,border:'none',borderRadius:8,padding:'12px',fontSize:15,fontWeight:700,cursor:ready&&!loading?'pointer':'default',fontFamily:'Inter,sans-serif',marginTop:4}}>
+                {loading?'Sending code...':'Get access - free'}
+              </button>
+              <div style={{fontSize:12,color:C.textLight,textAlign:'center'}}>No spam. We will reach out personally within one business day.</div>
+            </form>
+          </>
         )}
       </div>
     </div>
