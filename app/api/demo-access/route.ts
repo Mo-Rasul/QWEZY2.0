@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from '@/lib/supabase-app'
 import { sendDemoAccess } from '@/lib/email'
 
-const DEMO_COMPANY_ID = '4dd68cdf-b52f-4a91-aae1-51ffbc9423db' // Velo
+const DEMO_COMPANY_ID = '4dd68cdf-b52f-4a91-aae1-51ffbc9423db'
 const DEMO_PASSWORD = process.env.DEMO_USER_PASSWORD || 'QwezyDemo2026!'
 
 export async function POST(req: NextRequest) {
@@ -25,52 +25,35 @@ export async function POST(req: NextRequest) {
       })
     } catch {}
 
-    // 2. Check if user already exists
-    const { data: existingUser } = await supabaseAdmin
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .single()
-
+    // 2. Create or find user
     let userId: string
+    const { data: existingUser } = await supabaseAdmin
+      .from('users').select('id').eq('email', email).single()
 
     if (existingUser) {
       userId = existingUser.id
-      // Update password so they can sign in
       await supabaseAdmin.auth.admin.updateUserById(userId, { password: DEMO_PASSWORD })
     } else {
-      // Create auth user with known password
       const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-        email,
-        password: DEMO_PASSWORD,
-        email_confirm: true,
+        email, password: DEMO_PASSWORD, email_confirm: true,
         user_metadata: { name, company },
       })
-
       if (authError) {
-        // Try to find existing auth user
         const { data: { users } } = await supabaseAdmin.auth.admin.listUsers()
         const existing = users.find((u: any) => u.email === email)
-        if (!existing) {
-          return NextResponse.json({ error: 'Could not create account' }, { status: 500 })
-        }
+        if (!existing) return NextResponse.json({ error: 'Could not create account' }, { status: 500 })
         userId = existing.id
         await supabaseAdmin.auth.admin.updateUserById(userId, { password: DEMO_PASSWORD })
       } else {
         userId = authData.user.id
       }
-
-      // Assign to Velo demo company
       await supabaseAdmin.from('users').upsert({
-        id: userId,
-        company_id: DEMO_COMPANY_ID,
-        email, name,
-        role: 'analyst',
-        status: 'active',
+        id: userId, company_id: DEMO_COMPANY_ID,
+        email, name, role: 'analyst', status: 'active',
       }, { onConflict: 'id' })
     }
 
-    // 3. Sign them in directly to get a real session
+    // 3. Sign in to get session
     const supabasePublic = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -79,7 +62,7 @@ export async function POST(req: NextRequest) {
       email, password: DEMO_PASSWORD
     })
 
-    // 4. Send admin notification
+    // 4. Notifications
     const siteUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://qwezy.io'
     const RESEND_API_KEY = process.env.RESEND_API_KEY
     if (RESEND_API_KEY) {
@@ -87,46 +70,25 @@ export async function POST(req: NextRequest) {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: 'Qwezy <admin@qwezy.io>',
-          to: 'admin@qwezy.io',
+          from: 'Qwezy <admin@qwezy.io>', to: 'admin@qwezy.io',
           subject: `New demo signup: ${name} from ${company || 'unknown'}`,
-          html: `<p><strong>${name}</strong> (${email}) just signed up for a demo.</p>
-                 <p>Company: ${company || '—'}</p>
-                 <p>Role: ${role || '—'}</p>
-                 <p>Team size: ${teamSize || '—'}</p>
-                 <p>Industry: ${industry || '—'}</p>
-                 <p>Use case: ${useCase || '—'}</p>
-                 <p><a href="${siteUrl}/master">View in master admin</a></p>`
+          html: `<p><strong>${name}</strong> (${email})<br>Company: ${company || '—'} | Role: ${role || '—'}<br>Use case: ${useCase || '—'}</p><p><a href="${siteUrl}/master">View in master admin</a></p>`
         })
       }).catch(() => {})
     }
+    try { await sendDemoAccess(email, name, `${siteUrl}/dashboard`) } catch {}
 
-    // 5. Also send welcome email to user
-    try {
-      await sendDemoAccess(email, name, `${siteUrl}/dashboard`)
-    } catch {}
-
-    // 6. If sign-in worked, set cookies and redirect immediately
-    if (signInData?.session) {
-      const res = NextResponse.json({ ok: true, immediateLogin: true })
-      const cookieOpts = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax' as const,
-        maxAge: 60 * 60 * 24 * 7,
-        path: '/',
-      }
-      res.cookies.set('qwezy_session', signInData.session.access_token, cookieOpts)
-      res.cookies.set('qwezy_company', DEMO_COMPANY_ID, cookieOpts)
-      return res
+    // 5. Return token to frontend — let frontend set it via /api/auth/callback
+    if (!signInError && signInData?.session) {
+      return NextResponse.json({
+        ok: true,
+        immediateLogin: true,
+        token: signInData.session.access_token,
+        companyId: DEMO_COMPANY_ID,
+      })
     }
 
-    // Fallback — show check email screen
-    return NextResponse.json({
-      success: true,
-      magicLinkSent: true,
-      immediateLogin: false,
-    })
+    return NextResponse.json({ success: true, immediateLogin: false })
 
   } catch (err: any) {
     console.error('Demo access error:', err)
