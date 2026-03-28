@@ -283,14 +283,14 @@ function PreviewModal({table,onClose}:{table:any,onClose:()=>void}) {
 }
 
 // ── Context Menu ──────────────────────────────────────────────────────────────
-function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer}:{x:number,y:number,table:any,onClose:()=>void,onAsk:(q:string)=>void,onPreview:(t:any)=>void,onDrawer:(t:any)=>void}) {
+function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:number,y:number,table:any,onClose:()=>void,onAsk:(q:string)=>void,onPreview:(t:any)=>void,onDrawer:(t:any)=>void,onGrid:(t:any)=>void}) {
   useEffect(()=>{const h=()=>onClose();window.addEventListener('click',h);return()=>window.removeEventListener('click',h)},[])
   return(
     <div style={{position:'fixed',left:x,top:y,background:'#fff',borderRadius:7,border:`1px solid ${C.cardBorder}`,boxShadow:'0 6px 20px rgba(0,0,0,0.1)',zIndex:500,minWidth:200,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
       <div style={{padding:'5px 11px',borderBottom:`1px solid ${C.cardBorder}`,background:C.tableHead}}>
         <span style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em'}}>{table.name}</span>
       </div>
-      {[['View top 100 rows',()=>{onPreview(table);onClose()}],['Ask a question',()=>{onAsk(`Tell me about the ${table.name} table`);onClose()}],['Table details',()=>{onDrawer(table);onClose()}],['Copy table name',()=>{navigator.clipboard?.writeText(table.name);onClose()}]].map(([label,fn]:any)=>(
+      {[['Open as spreadsheet',()=>{onGrid(table);onClose()}],['View top 100 rows',()=>{onPreview(table);onClose()}],['Ask a question',()=>{onAsk(`Tell me about the ${table.name} table`);onClose()}],['Table details',()=>{onDrawer(table);onClose()}],['Copy table name',()=>{navigator.clipboard?.writeText(table.name);onClose()}]].map(([label,fn]:any)=>(
         <button key={label} onClick={fn}
           style={{display:'flex',alignItems:'center',width:'100%',padding:'8px 12px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
           onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>
@@ -1070,8 +1070,32 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
   const [note,setNote]=useState('')
   const [view,setView]=useState<'compose'|'preview'>('compose')
   const [sent,setSent]=useState(false)
+  const [aiSummary,setAiSummary]=useState('')
+  const [aiLoading,setAiLoading]=useState(false)
   const previewRows=rows.slice(0,8)
   const inputRef=useRef<HTMLInputElement>(null)
+
+  const generateAiSummary=async()=>{
+    setAiLoading(true)
+    try{
+      // Build compact data preview — top 8 rows, key fields only
+      const topRows=rows.slice(0,8)
+      const dataLines=topRows.map((r:any)=>fields.slice(0,4).map((f:string)=>`${f.replace(/_/g,' ')}: ${r[f]}`).join(' | ')).join('\n')
+      const prompt=`You are writing a short professional email note summarising a data report. No em dashes. No bullet points. Write 2 sentences maximum. Be specific with the actual numbers and names from the data. Sound like a professional analyst. Do not use the word "I". Do not include a greeting or sign-off.\n\nReport name: ${report.name}\nTotal rows: ${rows.length}\nData sample:\n${dataLines}\n\nWrite the summary now:`
+      const res=await fetch('/api/narrative',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})})
+      if(res.ok){
+        const d=await res.json()
+        const summary=d.text||d.content||''
+        if(summary){setAiSummary(summary);setNote(summary);return}
+      }
+      // Fallback: build from data directly without second AI call
+      const topRow=rows[0]
+      const highlight=fields.slice(0,2).map((f:string)=>`${f.replace(/_/g,' ')}: ${topRow?.[f]??'N/A'}`).join(', ')
+      setNote(`The ${report.name} report is ready with ${rows.length} records. Top result: ${highlight}.`)
+    }catch{
+      setNote(`The ${report.name} report is ready with ${rows.length} records attached for your review.`)
+    }finally{setAiLoading(false)}
+  }
 
   const addRecipient=(val:string)=>{
     const parts=val.split(/[,;\s]+/).map(s=>s.trim()).filter(s=>s.includes('@'))
@@ -1145,10 +1169,16 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
 
             {/* Personal note */}
             <div>
-              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>Personal note <span style={{fontWeight:400,textTransform:'none'}}>(optional — appears at the top of the email)</span></div>
-              <textarea value={note} onChange={e=>setNote(e.target.value)} rows={3}
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em'}}>Personal note <span style={{fontWeight:400,textTransform:'none'}}>(optional)</span></div>
+                <button onClick={generateAiSummary} disabled={aiLoading}
+                  style={{fontSize:11.5,padding:'3px 10px',borderRadius:5,border:`1px solid ${C.accent}33`,background:aiLoading?'#F0F4F8':C.accentBg,color:aiLoading?C.textLight:C.accent,cursor:aiLoading?'default':'pointer',fontFamily:'Inter,sans-serif',fontWeight:600,display:'flex',alignItems:'center',gap:5}}>
+                  {aiLoading?<><div style={{width:10,height:10,border:`1.5px solid ${C.cardBorder}`,borderTop:`1.5px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Generating…</>:<>✨ AI summary</>}
+                </button>
+              </div>
+              <textarea value={note} onChange={e=>setNote(e.target.value)} rows={note.split('\n').length>3?note.split('\n').length+1:4}
                 placeholder="Hi team, here's the weekly report. Key highlight: revenue is up 12% this month. Let me know if you have questions."
-                style={{width:'100%',padding:'9px 12px',borderRadius:8,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif',resize:'vertical',lineHeight:1.6}}
+                style={{width:'100%',padding:'9px 12px',borderRadius:8,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif',resize:'vertical',lineHeight:1.7}}
                 onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
             </div>
 
@@ -1186,8 +1216,10 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
                 <div style={{fontSize:11.5,color:C.textLight,marginBottom:4}}>To: <strong style={{color:C.text}}>{recipients.join(', ')}</strong></div>
                 <div style={{fontSize:11.5,color:C.textLight,marginBottom:20}}>Subject: <strong style={{color:C.text}}>{subject}</strong></div>
                 {note&&(
-                  <div style={{fontSize:14,color:C.text,lineHeight:1.7,padding:'14px 16px',background:'#F8FAFD',borderLeft:`3px solid ${C.accent}`,borderRadius:'0 8px 8px 0',marginBottom:22}}>
-                    {note}
+                  <div style={{fontSize:13.5,color:C.text,lineHeight:1.75,padding:'14px 16px',background:'#F8FAFD',borderLeft:`3px solid ${C.accent}`,borderRadius:'0 8px 8px 0',marginBottom:22}}>
+                    {note.split('\n\n').map((para,i)=>(
+                      <p key={i} style={{margin:0,marginBottom:i<note.split('\n\n').length-1?12:0}}>{para.replace(/\n/g,' ')}</p>
+                    ))}
                   </div>
                 )}
                 <div style={{fontSize:13,color:C.textMuted,marginBottom:18,lineHeight:1.65}}>
@@ -1445,10 +1477,22 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
 
 // ── Explorer Tab ──────────────────────────────────────────────────────────────
 function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void}) {
+  const [explorerView,setExplorerView]=useState<'tables'|'schema'>('tables')
   const [search,setSearch]=useState('')
   const filtered=search?TABLES.filter(t=>t.name.includes(search.toLowerCase())||t.columns.some(c=>c.n.includes(search.toLowerCase()))):TABLES
   return(
-    <div style={{padding:'20px 24px',overflowY:'auto',flex:1}}>
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      {/* Sub-tab bar */}
+      <div style={{background:'#fff',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',padding:'0 20px',flexShrink:0}}>
+        {[['tables','Tables'],['schema','Schema']].map(([v,l])=>(
+          <button key={v} onClick={()=>setExplorerView(v as any)}
+            style={{background:'none',border:'none',padding:'11px 14px',fontSize:13,fontWeight:explorerView===v?600:400,color:explorerView===v?C.accent:C.textMuted,cursor:'pointer',borderBottom:`2px solid ${explorerView===v?C.accent:'transparent'}`,fontFamily:'Inter,sans-serif'}}>
+            {l}
+          </button>
+        ))}
+      </div>
+      {explorerView==='schema'&&<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram onTableClick={t=>setDrawerTable(t)}/></div>}
+      {explorerView==='tables'&&<div style={{padding:'20px 24px',overflowY:'auto',flex:1}}>
       <div style={{display:'flex',gap:12,marginBottom:18,flexWrap:'wrap',alignItems:'flex-end'}}>
         <div>
           <h2 style={{fontSize:18,fontWeight:700,color:C.text,letterSpacing:'-0.3px',marginBottom:2}}>Database Explorer</h2>
@@ -1493,10 +1537,10 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>
           </div>
         ))}
       </div>
+      </div>}
     </div>
   )
-}
-
+} 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 const PRESET_QUERIES = [
   { id:'d1', name:'Revenue by Category', sql:`SELECT c.category_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM order_details od JOIN products p ON od.product_id=p.product_id JOIN categories c ON p.category_id=c.category_id GROUP BY c.category_name ORDER BY revenue DESC`, viz:'bar', w:460, h:260 },
@@ -1988,15 +2032,185 @@ function PresetCard({preset,onEdit,fullWidth=false}:{preset:any,onEdit:()=>void,
   )
 }
 
+
+// ── Alerts Tab ────────────────────────────────────────────────────────────────
+type AlertDef = {id:string,name:string,sql:string,severity:'warning'|'critical',description:string}
+const DEFAULT_ALERTS:AlertDef[] = [
+  {id:'a1',name:'Orders without ship date',sql:`SELECT COUNT(*) AS count FROM orders WHERE shipped_date IS NULL AND order_date < NOW() - INTERVAL '7 days'`,severity:'warning',description:'Orders placed over 7 days ago that have not been shipped yet'},
+  {id:'a2',name:'Out of stock products',sql:`SELECT COUNT(*) AS count FROM products WHERE units_in_stock = 0 AND discontinued = 0`,severity:'critical',description:'Active products with zero stock'},
+  {id:'a3',name:'High value unshipped orders',sql:`SELECT COUNT(*) AS count FROM orders o JOIN order_details od ON o.order_id=od.order_id WHERE o.shipped_date IS NULL GROUP BY o.order_id HAVING SUM(od.unit_price*od.quantity)>1000`,severity:'critical',description:'Unshipped orders with total value over $1,000'},
+  {id:'a4',name:'Customers with no orders in 90 days',sql:`SELECT COUNT(*) AS count FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.customer_id AND o.order_date > NOW() - INTERVAL '90 days')`,severity:'warning',description:'Customers who have not placed an order in the last 90 days'},
+]
+
+function AlertCard({alert}:{alert:AlertDef}) {
+  const [count,setCount]=useState<number|null>(null)
+  const [rows,setRows]=useState<any[]>([])
+  const [fields,setFields]=useState<string[]>([])
+  const [loading,setLoading]=useState(true)
+  const [expanded,setExpanded]=useState(false)
+  const [menuOpen,setMenuOpen]=useState(false)
+
+  useEffect(()=>{
+    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:alert.sql})})
+      .then(r=>r.json()).then(d=>{
+        if(!d.error){
+          setRows(d.rows||[]);setFields(d.fields||[])
+          if(d.rows?.[0])setCount(Number(Object.values(d.rows[0])[0])||0)
+        }
+      }).catch(()=>setCount(0)).finally(()=>setLoading(false))
+  },[alert.id])
+
+  useEffect(()=>{
+    const close=()=>setMenuOpen(false)
+    if(menuOpen)document.addEventListener('click',close)
+    return()=>document.removeEventListener('click',close)
+  },[menuOpen])
+
+  const isFiring=count!==null&&count>0
+  const color=alert.severity==='critical'?C.danger:C.warn
+  const bg=alert.severity==='critical'?'#FEF2F2':'#FFFBEB'
+  const border=alert.severity==='critical'?'#FECACA':'#FDE68A'
+
+  const exportCSV=()=>{
+    if(!rows.length)return
+    const csv=[fields.join(','),...rows.map(r=>fields.map(f=>String(r[f]??'')).join(','))].join('\n')
+    const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=`${alert.name}.csv`;a.click()
+  }
+
+  return(
+    <div style={{borderRadius:10,border:`1px solid ${isFiring?border:C.cardBorder}`,overflow:'hidden',background:'#fff'}}>
+      <div onClick={()=>setExpanded(s=>!s)}
+        style={{background:isFiring?bg:'#fff',padding:'14px 18px',display:'flex',gap:14,alignItems:'center',cursor:'pointer'}}
+        onMouseOver={e=>{if(!isFiring)(e.currentTarget as HTMLElement).style.background='#FAFAFA'}}
+        onMouseOut={e=>{(e.currentTarget as HTMLElement).style.background=isFiring?bg:'#fff'}}>
+        <div style={{width:36,height:36,borderRadius:8,background:isFiring?bg:'#F8FAFD',border:`1.5px solid ${isFiring?border:C.cardBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>
+          {loading?'…':isFiring?alert.severity==='critical'?'🔴':'🟡':'✅'}
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+            <span style={{fontSize:13.5,fontWeight:600,color:isFiring?color:C.text}}>{alert.name}</span>
+            <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:isFiring?bg:'#F0F4F8',color:isFiring?color:C.textLight,border:`1px solid ${isFiring?border:C.cardBorder}`}}>{alert.severity}</span>
+          </div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>{alert.description}</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          {loading?<span style={{fontSize:12,color:C.textLight}}>Checking…</span>
+            :<span style={{fontSize:13,fontWeight:700,color:isFiring?color:C.success}}>{isFiring?`${count} affected`:count===0?'All clear':''}</span>}
+          <div style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
+            <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
+              style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1,lineHeight:1}}
+              onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
+            {menuOpen&&(
+              <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:160,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+                <button onClick={()=>{exportCSV();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>⬇ Export CSV</button>
+                <button onClick={()=>{setExpanded(true);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>👁 View results</button>
+              </div>
+            )}
+          </div>
+          <span style={{fontSize:11,color:C.textLight,display:'inline-block',transform:expanded?'rotate(180deg)':'rotate(0deg)',transition:'transform .2s'}}>▼</span>
+        </div>
+      </div>
+      {expanded&&(
+        <div style={{borderTop:`1px solid ${isFiring?border:C.cardBorder}`,background:'#FAFAFA'}}>
+          {rows.length===0
+            ?<div style={{padding:'14px 18px',fontSize:13,color:C.textMuted}}>No results — all clear.</div>
+            :<div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+                <thead><tr style={{background:C.tableHead}}>
+                  {fields.map(f=><th key={f} style={{padding:'7px 12px',textAlign:'left',fontSize:10.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
+                </tr></thead>
+                <tbody>{rows.slice(0,20).map((r,i)=>(
+                  <tr key={i} style={{background:i%2===0?'#fff':'#F8FAFD',borderBottom:`1px solid #F1F5F9`}}>
+                    {fields.map(f=><td key={f} style={{padding:'6px 12px',color:C.text,whiteSpace:'nowrap'}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():String(r[f]??'')}</td>)}
+                  </tr>
+                ))}</tbody>
+              </table>
+              {rows.length>20&&<div style={{padding:'7px 12px',fontSize:11,color:C.textLight,borderTop:`1px solid ${C.cardBorder}`}}>Showing 20 of {rows.length} rows</div>}
+            </div>}
+        </div>
+      )}
+    </div>
+  )
+}
+function AlertsTab() {
+  const [alerts,setAlerts]=useState<AlertDef[]>(DEFAULT_ALERTS)
+  const [showAdd,setShowAdd]=useState(false)
+  const [newAlert,setNewAlert]=useState({name:'',description:'',sql:'',severity:'warning' as 'warning'|'critical'})
+
+  const addAlert=()=>{
+    if(!newAlert.name||!newAlert.sql)return
+    setAlerts(p=>[...p,{...newAlert,id:`a${Date.now()}`}])
+    setNewAlert({name:'',description:'',sql:'',severity:'warning'})
+    setShowAdd(false)
+  }
+
+  return(
+    <div>
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
+        <div>
+          <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:2}}>Alerts</div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>Conditions that run against your live data. Red or yellow means something needs attention.</div>
+        </div>
+        <div style={{marginLeft:'auto'}}>
+          <button onClick={()=>setShowAdd(s=>!s)}
+            style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
+        </div>
+      </div>
+
+      {/* Add alert form */}
+      {showAdd&&(
+        <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:10,padding:'16px 18px',marginBottom:16,display:'flex',flexDirection:'column',gap:10}}>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:180}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Alert name</div>
+              <input value={newAlert.name} onChange={e=>setNewAlert(p=>({...p,name:e.target.value}))} placeholder="e.g. Low stock warning"
+                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+            </div>
+            <div style={{width:140}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Severity</div>
+              <select value={newAlert.severity} onChange={e=>setNewAlert(p=>({...p,severity:e.target.value as any}))}
+                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
+                <option value="warning">Warning</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Description</div>
+            <input value={newAlert.description} onChange={e=>setNewAlert(p=>({...p,description:e.target.value}))} placeholder="What does this alert check for?"
+              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>SQL — returns a count, alert fires when count &gt; 0</div>
+            <textarea value={newAlert.sql} onChange={e=>setNewAlert(p=>({...p,sql:e.target.value}))} rows={3} placeholder="SELECT COUNT(*) AS count FROM ..."
+              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:"'JetBrains Mono',monospace",resize:'vertical',lineHeight:1.6}}/>
+          </div>
+          <div style={{display:'flex',gap:6}}>
+            <button onClick={addAlert} style={{padding:'7px 18px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save alert</button>
+            <button onClick={()=>setShowAdd(false)} style={{padding:'7px 12px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+        {alerts.map(a=><AlertCard key={a.id} alert={a}/>)}
+      </div>
+    </div>
+  )
+}
+
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void}) {
   const [pages,setPages]=useState<DashPage[]>([{id:'overview',name:'Overview',views:[]}])
   const [activePage,setActivePage]=useState('overview')
   const [renamingPage,setRenamingPage]=useState<string|null>(null)
   const [builder,setBuilder]=useState<{open:boolean,editing:DashView|null}>({open:false,editing:null})
-  const [customViews,setCustomViews]=useState<DashView[]>([]) // for overview page
+  const [customViews,setCustomViews]=useState<DashView[]>([])
+  const [showAlerts,setShowAlerts]=useState(false)
 
-  const isOverview=activePage==='overview'
+  const isOverview=activePage==='overview'&&!showAlerts
   const currentPage=pages.find(p=>p.id===activePage)||pages[0]
   const currentViews=isOverview?customViews:currentPage.views
 
@@ -2060,6 +2274,13 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
           </div>
         ))}
         <button onClick={addPage} style={{padding:'10px 12px',fontSize:13,color:C.textLight,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0,whiteSpace:'nowrap'}}>+ Page</button>
+        {/* Alerts tab */}
+        <div style={{borderBottom:`2px solid ${showAlerts?C.danger:'transparent'}`,marginRight:2}}>
+          <button onClick={()=>{setShowAlerts(s=>!s);setActivePage('overview')}}
+            style={{padding:'11px 10px',cursor:'pointer',fontSize:13,fontWeight:showAlerts?600:400,color:showAlerts?C.danger:C.textMuted,background:'none',border:'none',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:5}}>
+            🔔 Alerts
+          </button>
+        </div>
         <div style={{marginLeft:'auto',paddingLeft:12,flexShrink:0}}>
           <button onClick={()=>openBuilder(null)} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600,whiteSpace:'nowrap'}}>+ Add visual</button>
         </div>
@@ -2067,7 +2288,8 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
 
       {/* Canvas */}
       <div style={{flex:1,overflowY:'auto',padding:20}}>
-        {isOverview&&(
+        {showAlerts&&<AlertsTab/>}
+        {!showAlerts&&isOverview&&(
           <>
             <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
               {PRESET_KPIS.map(kpi=><KpiCard key={kpi.id} kpi={kpi}/>)}
@@ -2090,7 +2312,7 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
             )}
           </>
         )}
-        {!isOverview&&(
+        {!showAlerts&&!isOverview&&(
           currentViews.length===0
             ?<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',paddingTop:80,textAlign:'center'}}>
               <div style={{fontSize:44,marginBottom:16}}>📊</div>
@@ -2180,6 +2402,667 @@ function TourOverlay({onFinish,onTabSwitch}:{onFinish:()=>void,onTabSwitch:(tab:
 }
 
 
+
+// ── Table Grid View (Airtable-style) ─────────────────────────────────────────
+const IS_ADMIN = true // TODO: wire to real auth role
+
+type GridMsg = {id:string,role:'user'|'assistant',text:string,loading?:boolean,tableData?:{rows:any[],fields:string[]},followUps?:string[]}
+
+function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,dataAccess:boolean}) {
+  const [rows,setRows]=useState<any[]>([])
+  const [fields,setFields]=useState<string[]>([])
+  const [loading,setLoading]=useState(true)
+  const [err,setErr]=useState('')
+  const [unlocked,setUnlocked]=useState(false)
+  const [editCell,setEditCell]=useState<{row:number,field:string}|null>(null)
+  const [editVal,setEditVal]=useState('')
+  const [sortField,setSortField]=useState<string|null>(null)
+  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc')
+  const [filters,setFilters]=useState<{field:string,op:string,val:string}[]>([])
+  const [showFilter,setShowFilter]=useState(false)
+  const [colWidths,setColWidths]=useState<Record<string,number>>({})
+  const [newRowMode,setNewRowMode]=useState(false)
+  const [newRow,setNewRow]=useState<Record<string,string>>({})
+  const [rowContextMenu,setRowContextMenu]=useState<{x:number,y:number,rowIdx:number}|null>(null)
+  // Chat state
+  const [showChat,setShowChat]=useState(false)
+  const [chatMsgs,setChatMsgs]=useState<GridMsg[]>([])
+  const [chatInput,setChatInput]=useState('')
+  const [chatLoading,setChatLoading]=useState(false)
+  const chatBottomRef=useRef<HTMLDivElement>(null)
+  const colDragRef=useRef<{field:string,startX:number,startW:number}|null>(null)
+  const inputRef=useRef<HTMLInputElement>(null)
+
+  useEffect(()=>{
+    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:`SELECT * FROM ${table.name} LIMIT 500`})})
+      .then(r=>r.json()).then(d=>{if(d.error)setErr(d.error);else{setRows(d.rows||[]);setFields(d.fields||[])}})
+      .catch(e=>setErr(e.message)).finally(()=>setLoading(false))
+  },[table.name])
+
+  useEffect(()=>{if(editCell)setTimeout(()=>inputRef.current?.focus(),50)},[editCell])
+  useEffect(()=>{const close=()=>setRowContextMenu(null);if(rowContextMenu)document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[rowContextMenu])
+  useEffect(()=>{chatBottomRef.current?.scrollIntoView({behavior:'smooth'})},[chatMsgs])
+
+  const colW=(f:string)=>colWidths[f]||Math.max(120,Math.min(240,f.length*10+60))
+
+  const displayed=useMemo(()=>{
+    let r=[...rows]
+    filters.forEach(f=>{
+      if(!f.field||!f.val)return
+      r=r.filter(row=>{
+        const v=String(row[f.field]??'').toLowerCase(),fv=f.val.toLowerCase()
+        if(f.op==='contains')return v.includes(fv)
+        if(f.op==='equals')return v===fv
+        if(f.op==='starts with')return v.startsWith(fv)
+        if(f.op==='>') return Number(row[f.field])>Number(f.val)
+        if(f.op==='<') return Number(row[f.field])<Number(f.val)
+        return true
+      })
+    })
+    if(sortField) r.sort((a,b)=>{const c=String(a[sortField]??'').localeCompare(String(b[sortField]??''),undefined,{numeric:true});return sortDir==='asc'?c:-c})
+    return r
+  },[rows,filters,sortField,sortDir])
+
+  const commitEdit=()=>{
+    if(!editCell)return
+    setRows(prev=>prev.map((r,i)=>i===editCell.row?{...r,[editCell.field]:editVal}:r))
+    setEditCell(null)
+  }
+
+  const startColResize=(e:React.MouseEvent,field:string)=>{
+    e.preventDefault();e.stopPropagation()
+    colDragRef.current={field,startX:e.clientX,startW:colW(field)}
+    const move=(ev:MouseEvent)=>{if(colDragRef.current)setColWidths(p=>({...p,[colDragRef.current!.field]:Math.max(60,colDragRef.current!.startW+(ev.clientX-colDragRef.current!.startX))}))}
+    const up=()=>{colDragRef.current=null;window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',up)}
+    window.addEventListener('mousemove',move);window.addEventListener('mouseup',up)
+  }
+
+  const toggleSort=(f:string)=>{if(sortField===f)setSortDir(d=>d==='asc'?'desc':'asc');else{setSortField(f);setSortDir('asc')}}
+  const addRow=()=>{const r:Record<string,string>={};fields.forEach(f=>r[f]=newRow[f]||'');setRows(p=>[...p,r]);setNewRow({});setNewRowMode(false)}
+  const deleteRow=(idx:number)=>{setRows(p=>p.filter((_,i)=>i!==idx));setRowContextMenu(null)}
+  const CELL_H=36
+
+  const sendChat=async()=>{
+    const q=chatInput.trim()
+    if(!q||chatLoading)return
+    setChatInput('')
+    setChatMsgs(p=>[...p,
+      {id:`m${Date.now()}`,role:'user',text:q},
+      {id:`m${Date.now()}t`,role:'assistant',text:'',loading:true}
+    ])
+    setChatLoading(true)
+    try{
+      // Always run the query first to get real data
+      const qRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          question:`About the ${table.name} table: ${q}`,
+          conversationContext:`The user is viewing the ${table.name} table. Columns: ${fields.join(', ')}. ${rows.length} rows loaded.`
+        })})
+      const qData=await qRes.json()
+
+      if(qData.error){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${qData.error}`}))
+        return
+      }
+
+      const resultRows:any[]=qData.rows||[]
+      const resultFields:string[]=qData.fields||[]
+
+      if(!dataAccess){
+        // DATA OFF — return raw table results, no narrative
+        if(resultRows.length===0){
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found.'}))
+        } else {
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({
+            id:`m${Date.now()}a`,role:'assistant',
+            text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
+            tableData:{rows:resultRows.slice(0,20),fields:resultFields}
+          }))
+        }
+        return
+      }
+
+      // DATA ON — ask Anthropic to narrate the results in plain English
+      if(resultRows.length===0){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'I didn\'t find any matching results for that.'}))
+        return
+      }
+
+      // Build a compact data summary to pass as context
+      const dataSummary=resultRows.slice(0,15).map((r:any)=>
+        resultFields.map((f:string)=>`${f}=${r[f]}`).join(', ')
+      ).join(' | ')
+
+      // Second call: ask for a conversational sentence answer
+      const narrativeRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          question:q,
+          conversationContext:`You are answering a question about data from the "${table.name}" table. The query returned ${resultRows.length} row(s). Here is the data: ${dataSummary}. Answer the user's question in 1-2 natural conversational sentences using the actual names and numbers from the data. Do not use bullet points or lists. Sound like a helpful human analyst.`
+        })})
+      const nData=await narrativeRes.json()
+
+      // The narrative call may come back as rows (if it ran a query) or as a text response
+      // We check for a text-like single-row result first
+      let narrative=''
+      if(nData.rows?.length===1){
+        const firstRow=nData.rows[0]
+        const vals=Object.values(firstRow)
+        if(vals.length===1&&typeof vals[0]==='string'&&(vals[0] as string).length>20){
+          narrative=vals[0] as string
+        }
+      }
+      // Fallback: build a clear sentence from the actual data ourselves
+      if(!narrative){
+        if(resultRows.length===1){
+          const row=resultRows[0]
+          narrative=`Based on the data: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${row[f]}`).join(', ')}.`
+        } else {
+          narrative=`I found ${resultRows.length} results. The top result: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${resultRows[0][f]}`).join(', ')}.`
+        }
+      }
+
+      // Generate 2-3 contextual follow-up suggestions
+      const followUps:string[]=[]
+      if(resultRows.length>0){
+        const flds=resultFields.slice(0,3).join(', ')
+        if(resultRows.length===1) followUps.push(`Show all ${table.name}`,`What else is notable here?`)
+        else{
+          followUps.push(`What's the average?`)
+          if(resultFields.some((f:string)=>f.toLowerCase().includes('date')||f.toLowerCase().includes('month'))) followUps.push('Show the trend over time')
+          else followUps.push(`Show the bottom 5 instead`)
+          if(resultRows.length>5) followUps.push(`Filter to just the top 3`)
+        }
+      }
+      setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:narrative,followUps:followUps.slice(0,3)}))
+
+    }catch(e:any){
+      setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:'Something went wrong. Please try again.'}))
+    }finally{setChatLoading(false)}
+  }
+
+  return(
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:'#fff'}}>
+      {/* Toolbar */}
+      <div style={{padding:'8px 16px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:10,background:'#fff',flexShrink:0}}>
+        <button onClick={onClose} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:13,padding:'4px 8px',borderRadius:5,fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:4}}
+          onMouseOver={e=>e.currentTarget.style.background='#F0F4F8'} onMouseOut={e=>e.currentTarget.style.background='none'}>← Back</button>
+        <div style={{width:1,height:20,background:C.cardBorder}}/>
+        <div style={{display:'flex',alignItems:'center',gap:7}}>
+          <div style={{width:9,height:9,borderRadius:'50%',background:table.color}}/>
+          <span style={{fontSize:14,fontWeight:600,color:C.text,fontFamily:"'JetBrains Mono'"}}>{table.name}</span>
+          {!loading&&<span style={{fontSize:12,color:C.textLight}}>{displayed.length} rows</span>}
+        </div>
+        <div style={{flex:1}}/>
+        {/* Filter */}
+        <button onClick={()=>setShowFilter(s=>!s)}
+          style={{fontSize:12.5,padding:'5px 12px',borderRadius:6,border:`1.5px solid ${showFilter?C.accent:C.cardBorder}`,background:showFilter?C.accentBg:'#fff',color:showFilter?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500,display:'flex',alignItems:'center',gap:5}}>
+          ⊞ Filter{filters.filter(f=>f.val).length>0&&<span style={{background:C.accent,color:'#fff',borderRadius:10,fontSize:10,padding:'1px 6px',fontWeight:700}}>{filters.filter(f=>f.val).length}</span>}
+        </button>
+        {/* Ask button */}
+        <button onClick={()=>setShowChat(s=>!s)}
+          style={{fontSize:12.5,padding:'5px 12px',borderRadius:6,border:`1.5px solid ${showChat?C.accent:C.cardBorder}`,background:showChat?C.accentBg:'#fff',color:showChat?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500,display:'flex',alignItems:'center',gap:5}}>
+          💬 Ask
+        </button>
+        {/* Unlock / Lock toggle */}
+        {IS_ADMIN&&(
+          <button onClick={()=>{setUnlocked(s=>!s);if(unlocked){setEditCell(null);setNewRowMode(false)}}}
+            style={{fontSize:12.5,padding:'5px 12px',borderRadius:6,border:`1.5px solid ${unlocked?C.warn:C.cardBorder}`,background:unlocked?'#FFFBEB':'#fff',color:unlocked?'#B45309':C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600,display:'flex',alignItems:'center',gap:5}}>
+            {unlocked?'🔓 Editing':'🔒 Locked'}
+          </button>
+        )}
+        {/* Add row — only when unlocked */}
+        {IS_ADMIN&&unlocked&&(
+          <button onClick={()=>setNewRowMode(true)} style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add row</button>
+        )}
+      </div>
+
+      {/* Unlock banner */}
+      {IS_ADMIN&&!unlocked&&(
+        <div style={{padding:'6px 16px',background:'#FFFBEB',borderBottom:'1px solid #FDE68A',display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+          <span style={{fontSize:12,color:'#92400E'}}>🔒 This table is locked — click <strong>Locked</strong> in the toolbar to enable editing</span>
+        </div>
+      )}
+      {IS_ADMIN&&unlocked&&(
+        <div style={{padding:'6px 16px',background:'#ECFDF5',borderBottom:'1px solid #A7F3D0',display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+          <span style={{fontSize:12,color:'#065F46'}}>🔓 Editing enabled — click any cell to edit · Right-click a row to delete</span>
+        </div>
+      )}
+
+      {/* Filter bar */}
+      {showFilter&&(
+        <div style={{padding:'8px 16px',borderBottom:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',flexShrink:0}}>
+          {filters.map((f,i)=>(
+            <div key={i} style={{display:'flex',gap:5,alignItems:'center',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'4px 8px'}}>
+              <select value={f.field} onChange={e=>setFilters(p=>p.map((fi,j)=>j===i?{...fi,field:e.target.value}:fi))} style={{border:'none',fontSize:12,color:C.text,fontFamily:"'JetBrains Mono'",background:'transparent',cursor:'pointer',outline:'none'}}>
+                {fields.map(field=><option key={field}>{field}</option>)}
+              </select>
+              <select value={f.op} onChange={e=>setFilters(p=>p.map((fi,j)=>j===i?{...fi,op:e.target.value}:fi))} style={{border:'none',fontSize:12,color:C.textMuted,fontFamily:'Inter,sans-serif',background:'transparent',cursor:'pointer',outline:'none'}}>
+                {['contains','equals','starts with','>','<'].map(op=><option key={op}>{op}</option>)}
+              </select>
+              <input value={f.val} onChange={e=>setFilters(p=>p.map((fi,j)=>j===i?{...fi,val:e.target.value}:fi))} placeholder="value"
+                style={{border:'none',fontSize:12,width:90,outline:'none',color:C.text,fontFamily:'Inter,sans-serif'}}/>
+              <button onClick={()=>setFilters(p=>p.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,lineHeight:1}}>×</button>
+            </div>
+          ))}
+          <button onClick={()=>setFilters(p=>[...p,{field:fields[0]||'',op:'contains',val:''}])} style={{fontSize:12,color:C.accent,background:C.accentBg,border:`1px solid ${C.accent}33`,borderRadius:5,padding:'4px 10px',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500}}>+ Add filter</button>
+          {filters.length>0&&<button onClick={()=>setFilters([])} style={{fontSize:12,color:C.textLight,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',textDecoration:'underline'}}>Clear all</button>}
+        </div>
+      )}
+
+      {/* Main area: grid + optional chat panel */}
+      <div style={{flex:1,display:'flex',overflow:'hidden'}}>
+
+        {/* Grid */}
+        <div style={{flex:1,overflow:'auto',position:'relative'}}>
+          {loading&&<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:C.textLight,fontSize:13,gap:8}}><div style={{width:14,height:14,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading…</div>}
+          {err&&<div style={{padding:20,color:C.danger,fontSize:13}}>{err}</div>}
+          {!loading&&!err&&(
+            <table style={{borderCollapse:'collapse',tableLayout:'fixed',minWidth:'100%'}}>
+              <thead style={{position:'sticky',top:0,zIndex:10}}>
+                <tr style={{background:C.tableHead}}>
+                  <th style={{width:44,minWidth:44,padding:'0 8px',borderBottom:`2px solid ${C.cardBorder}`,borderRight:`1px solid ${C.cardBorder}`,color:C.textLight,fontSize:11,fontWeight:500,textAlign:'center',userSelect:'none'}}>#</th>
+                  {fields.map(f=>(
+                    <th key={f} style={{width:colW(f),minWidth:colW(f),maxWidth:colW(f),padding:0,borderBottom:`2px solid ${C.cardBorder}`,borderRight:`1px solid ${C.cardBorder}`,position:'relative',userSelect:'none'}}>
+                      <div style={{display:'flex',alignItems:'center',height:CELL_H,paddingLeft:10}}>
+                        <button onClick={()=>toggleSort(f)} style={{flex:1,background:'none',border:'none',cursor:'pointer',textAlign:'left',fontSize:11.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.04em',fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:4,height:'100%'}}>
+                          {f.replace(/_/g,' ')}{sortField===f&&<span style={{color:C.accent}}>{sortDir==='asc'?'↑':'↓'}</span>}
+                        </button>
+                        <div onMouseDown={e=>startColResize(e,f)} style={{width:6,height:'100%',cursor:'col-resize',position:'absolute',right:0,top:0,zIndex:1}}
+                          onMouseOver={e=>e.currentTarget.style.background='rgba(5,150,105,0.3)'} onMouseOut={e=>e.currentTarget.style.background='transparent'}/>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {displayed.map((row,i)=>(
+                  <tr key={i} style={{background:i%2===0?'#fff':'#FAFCFE'}}
+                    onContextMenu={IS_ADMIN&&unlocked?e=>{e.preventDefault();setRowContextMenu({x:e.clientX,y:e.clientY,rowIdx:i})}:undefined}>
+                    <td style={{width:44,textAlign:'center',fontSize:11,color:C.textLight,borderBottom:`1px solid #F1F5F9`,borderRight:`1px solid ${C.cardBorder}`,height:CELL_H,userSelect:'none'}}>{i+1}</td>
+                    {fields.map(f=>{
+                      const isEditing=editCell?.row===i&&editCell?.field===f
+                      const val=String(row[f]??'')
+                      const isNum=!!val.match(/^-?\d+(\.\d+)?$/)
+                      return(
+                        <td key={f} style={{width:colW(f),maxWidth:colW(f),height:CELL_H,padding:0,borderBottom:`1px solid #F1F5F9`,borderRight:`1px solid ${C.cardBorder}`,position:'relative',overflow:'hidden'}}
+                          onClick={IS_ADMIN&&unlocked?()=>{setEditCell({row:i,field:f});setEditVal(val)}:undefined}>
+                          {isEditing
+                            ?<input ref={inputRef} value={editVal} onChange={e=>setEditVal(e.target.value)} onBlur={commitEdit}
+                                onKeyDown={e=>{if(e.key==='Enter')commitEdit();if(e.key==='Escape')setEditCell(null)}}
+                                style={{width:'100%',height:'100%',padding:'0 10px',border:'none',outline:`2px solid ${C.accent}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff',position:'absolute',top:0,left:0,zIndex:5,boxSizing:'border-box'}}/>
+                            :<div style={{padding:'0 10px',fontSize:13,color:C.text,height:CELL_H,display:'flex',alignItems:'center',overflow:'hidden',cursor:IS_ADMIN&&unlocked?'text':'default'}}>
+                              {isNum?<span style={{fontFamily:"'JetBrains Mono'",fontSize:12,color:C.accentDark,fontWeight:500}}>{Number(val).toLocaleString()}</span>:val}
+                            </div>}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+                {newRowMode&&IS_ADMIN&&unlocked&&(
+                  <tr style={{background:'#F0F7FF'}}>
+                    <td style={{textAlign:'center',fontSize:11,color:C.accent,borderBottom:`1px solid ${C.cardBorder}`,borderRight:`1px solid ${C.cardBorder}`,height:CELL_H}}>*</td>
+                    {fields.map(f=>(
+                      <td key={f} style={{borderBottom:`1px solid ${C.cardBorder}`,borderRight:`1px solid ${C.cardBorder}`,padding:0,height:CELL_H}}>
+                        <input value={newRow[f]||''} onChange={e=>setNewRow(p=>({...p,[f]:e.target.value}))} onKeyDown={e=>e.key==='Enter'&&addRow()} placeholder={f}
+                          style={{width:'100%',height:'100%',padding:'0 10px',border:'none',outline:'none',fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'transparent',boxSizing:'border-box'}}/>
+                      </td>
+                    ))}
+                  </tr>
+                )}
+                <tr>
+                  <td colSpan={fields.length+1} style={{padding:'6px 12px',borderTop:`1px solid ${C.cardBorder}`,background:newRowMode?'#F0F7FF':'#fff'}}>
+                    {newRowMode&&IS_ADMIN&&unlocked
+                      ?<div style={{display:'flex',gap:6}}>
+                        <button onClick={addRow} style={{fontSize:12.5,background:C.accent,color:'#fff',border:'none',borderRadius:5,padding:'5px 14px',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>Save row</button>
+                        <button onClick={()=>{setNewRowMode(false);setNewRow({})}} style={{fontSize:12.5,background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:5,padding:'5px 10px',cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
+                      </div>
+                      :IS_ADMIN&&unlocked
+                        ?<button onClick={()=>setNewRowMode(true)} style={{fontSize:12.5,color:C.textLight,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:5}}
+                            onMouseOver={e=>e.currentTarget.style.color=C.accent} onMouseOut={e=>e.currentTarget.style.color=C.textLight}>+ Add a row</button>
+                        :null}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Side chat panel */}
+        {showChat&&(
+          <div style={{width:300,borderLeft:`1px solid ${C.cardBorder}`,display:'flex',flexDirection:'column',background:'#fff',flexShrink:0}}>
+            {/* Chat header */}
+            <div style={{padding:'10px 14px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.navBg,flexShrink:0}}>
+              <div style={{width:8,height:8,borderRadius:'50%',background:dataAccess?C.success:'#94A3B8',boxShadow:dataAccess?'0 0 0 2px rgba(16,185,129,0.3)':'none'}}/>
+              <span style={{fontSize:13,fontWeight:600,color:'#fff',flex:1}}>Ask about {table.name}</span>
+
+              <button onClick={()=>setShowChat(false)} style={{background:'none',border:'none',color:'rgba(255,255,255,0.5)',cursor:'pointer',fontSize:16,lineHeight:1}}>×</button>
+            </div>
+            {/* Messages */}
+            <div style={{flex:1,overflowY:'auto',padding:'12px 12px',display:'flex',flexDirection:'column',gap:10}}>
+              {chatMsgs.length===0&&(
+                <div style={{textAlign:'center',paddingTop:20}}>
+                  <div style={{fontSize:22,marginBottom:8}}>💬</div>
+                  <div style={{fontSize:12.5,color:C.textMuted,lineHeight:1.6,marginBottom:14}}>Ask anything about this table</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                    {[`How many rows are in ${table.name}?`,`What's the most common value?`,`Show me a summary`].map(s=>(
+                      <button key={s} onClick={()=>{setChatInput(s);setTimeout(()=>sendChat(),50)}}
+                        style={{fontSize:11.5,padding:'6px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#F8FAFD',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left',lineHeight:1.4}}
+                        onMouseOver={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.text}}
+                        onMouseOut={e=>{e.currentTarget.style.borderColor=C.cardBorder;e.currentTarget.style.color=C.textMuted}}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {chatMsgs.map(msg=>(
+                <div key={msg.id} style={{display:'flex',flexDirection:'column',alignItems:msg.role==='user'?'flex-end':'flex-start'}}>
+                  {msg.loading
+                    ?<div style={{background:'#F0F4F8',borderRadius:'8px 8px 8px 2px',padding:'10px 12px',display:'flex',gap:4,alignItems:'center'}}>
+                      {[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:'50%',background:C.textLight,animation:`bounce .8s ${i*0.15}s infinite alternate`}}/>)}
+                    </div>
+                    :msg.role==='user'
+                      ?<div style={{background:C.accent,color:'#fff',borderRadius:'12px 12px 2px 12px',padding:'8px 12px',fontSize:13,maxWidth:'90%',lineHeight:1.5,wordBreak:'break-word'}}>{msg.text}</div>
+                      :msg.tableData
+                        ?<div style={{background:'#F0F4F8',borderRadius:'2px 12px 12px 12px',padding:'8px 10px',maxWidth:'100%',overflow:'hidden'}}>
+                          <div style={{fontSize:12,color:C.textMuted,marginBottom:6}}>{msg.text}</div>
+                          <div style={{overflowX:'auto',borderRadius:6,border:`1px solid ${C.cardBorder}`}}>
+                            <table style={{borderCollapse:'collapse',fontSize:11.5,width:'100%',background:'#fff'}}>
+                              <thead><tr style={{background:C.tableHead}}>
+                                {msg.tableData.fields.map(f=><th key={f} style={{padding:'5px 8px',textAlign:'left',fontWeight:600,color:C.textLight,textTransform:'uppercase',fontSize:10,letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
+                              </tr></thead>
+                              <tbody>{msg.tableData.rows.map((r,i)=>(
+                                <tr key={i} style={{background:i%2===0?'#fff':'#FAFCFE'}}>
+                                  {msg.tableData!.fields.map(f=><td key={f} style={{padding:'4px 8px',color:C.text,borderBottom:`1px solid #F1F5F9`,whiteSpace:'nowrap',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis'}}>{String(r[f]??'')}</td>)}
+                                </tr>
+                              ))}</tbody>
+                            </table>
+                          </div>
+                        </div>
+                        :<div style={{display:'flex',flexDirection:'column',gap:5,maxWidth:'95%'}}>
+                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',whiteSpace:'pre-wrap'}}>{msg.text}</div>
+                          {msg.followUps&&msg.followUps.length>0&&(
+                            <div style={{display:'flex',flexWrap:'wrap',gap:5,paddingLeft:2}}>
+                              {msg.followUps.map((s,i)=>(
+                                <button key={i} onClick={()=>{setChatInput(s);setTimeout(()=>sendChat(),50)}}
+                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}
+                                  onMouseOver={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}}
+                                  onMouseOut={e=>{e.currentTarget.style.borderColor=C.cardBorder;e.currentTarget.style.color=C.textMuted}}>
+                                  {s}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>}
+                </div>
+              ))}
+              <div ref={chatBottomRef}/>
+            </div>
+            {/* Input */}
+            <div style={{padding:'10px 12px',borderTop:`1px solid ${C.cardBorder}`,background:'#fff',flexShrink:0}}>
+              <div style={{display:'flex',gap:6,alignItems:'flex-end',background:'#F8FAFD',borderRadius:8,border:`1.5px solid ${C.cardBorder}`,padding:'6px 8px'}}>
+                <textarea value={chatInput} onChange={e=>setChatInput(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}}}
+                  placeholder={`Ask about ${table.name}…`} rows={2}
+                  style={{flex:1,border:'none',background:'transparent',fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',resize:'none',outline:'none',lineHeight:1.5}}/>
+                <button onClick={sendChat} disabled={!chatInput.trim()||chatLoading}
+                  style={{background:chatInput.trim()&&!chatLoading?C.accent:'#E5E7EB',color:chatInput.trim()&&!chatLoading?'#fff':C.textLight,border:'none',borderRadius:6,padding:'6px 10px',fontSize:13,cursor:'pointer',flexShrink:0,fontWeight:600,fontFamily:'Inter,sans-serif'}}>
+                  ↑
+                </button>
+              </div>
+              <div style={{fontSize:10.5,color:C.textLight,marginTop:4}}>Enter to send · Shift+Enter for new line</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Status bar */}
+      <div style={{padding:'5px 16px',borderTop:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',gap:16,alignItems:'center',flexShrink:0}}>
+        <span style={{fontSize:11,color:C.textLight}}>{displayed.length} of {rows.length} rows</span>
+        {sortField&&<span style={{fontSize:11,color:C.accent}}>Sorted by {sortField} {sortDir==='asc'?'↑':'↓'} · <button onClick={()=>setSortField(null)} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:11,fontFamily:'Inter,sans-serif',textDecoration:'underline'}}>clear</button></span>}
+        <span style={{fontSize:11,color:unlocked?C.warn:C.textLight,fontWeight:500,marginLeft:'auto'}}>{unlocked?'🔓 Editing enabled':'🔒 Read only'}</span>
+      </div>
+
+      {/* Row context menu */}
+      {rowContextMenu&&(
+        <div style={{position:'fixed',left:rowContextMenu.x,top:rowContextMenu.y,background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:7,boxShadow:'0 6px 20px rgba(0,0,0,0.1)',zIndex:600,minWidth:160,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+          <button onClick={()=>deleteRow(rowContextMenu.rowIdx)} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+            onMouseOver={e=>e.currentTarget.style.background='#FEF2F2'} onMouseOut={e=>e.currentTarget.style.background='none'}>🗑 Delete row</button>
+        </div>
+      )}
+
+      <style>{`@keyframes bounce{to{transform:translateY(-4px);opacity:.4}}`}</style>
+    </div>
+  )
+}
+
+
+
+// ── Admin Page ────────────────────────────────────────────────────────────────
+function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
+  const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
+  const USERS=[
+    {name:'Mo Rasul',email:'velo@demo.qwezy.io',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
+    {name:'Sarah Chen',email:'sarah@velo.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
+    {name:'James Park',email:'james@velo.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
+  ]
+  const ROLES=[
+    {role:'Admin',desc:'Full access — manage settings, users, data, and all queries',color:C.accent},
+    {role:'Editor',desc:'Can query, build dashboards, run reports, and edit grid data',color:'#3B82F6'},
+    {role:'Viewer',desc:'Read-only — can query and view dashboards but cannot edit data',color:'#8B5CF6'},
+  ]
+  const [inviteEmail,setInviteEmail]=useState('')
+  const [inviteRole,setInviteRole]=useState('Viewer')
+  const [showInvite,setShowInvite]=useState(false)
+
+  const usedPct=Math.round((PLAN_LIMITS.used/PLAN_LIMITS.queries)*100)
+
+  return(
+    <div style={{flex:1,overflowY:'auto',background:C.bg}}>
+      <div style={{maxWidth:900,margin:'0 auto',padding:'28px 24px'}}>
+
+        {/* Page header */}
+        <div style={{marginBottom:28}}>
+          <div style={{fontSize:20,fontWeight:800,color:C.text,letterSpacing:'-0.3px',marginBottom:4}}>Admin Settings</div>
+          <div style={{fontSize:13.5,color:C.textMuted}}>Manage your workspace, team, and AI settings</div>
+        </div>
+
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+
+          {/* Usage this cycle */}
+          <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Usage this cycle</div>
+            <div style={{display:'flex',alignItems:'flex-end',gap:6,marginBottom:10}}>
+              <span style={{fontSize:36,fontWeight:800,color:C.text,letterSpacing:'-1px',lineHeight:1}}>{PLAN_LIMITS.used}</span>
+              <span style={{fontSize:14,color:C.textLight,marginBottom:4}}>/ {PLAN_LIMITS.queries} queries</span>
+            </div>
+            <div style={{height:6,background:'#E5E7EB',borderRadius:3,overflow:'hidden',marginBottom:8}}>
+              <div style={{height:'100%',width:`${usedPct}%`,background:usedPct>80?C.danger:usedPct>60?C.warn:C.accent,borderRadius:3,transition:'width .4s'}}/>
+            </div>
+            <div style={{fontSize:12,color:C.textLight}}>Resets {PLAN_LIMITS.resetDate} · <span style={{color:usedPct>80?C.danger:C.textLight,fontWeight:500}}>{usedPct}% used</span></div>
+          </div>
+
+          {/* Plan */}
+          <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Plan</div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
+              <div style={{fontSize:22,fontWeight:800,color:C.text}}>Starter</div>
+              <span style={{fontSize:11,padding:'2px 8px',borderRadius:4,background:C.accentBg,color:C.accent,fontWeight:700,border:`1px solid ${C.greenBorder}`}}>Active</span>
+            </div>
+            {[['Queries / month','500'],['Team seats','5'],['Databases','1'],['Data access AI','Included']].map(([k,v])=>(
+              <div key={k} style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
+                <span style={{fontSize:12.5,color:C.textMuted}}>{k}</span>
+                <span style={{fontSize:12.5,fontWeight:600,color:C.text}}>{v}</span>
+              </div>
+            ))}
+            <button style={{marginTop:12,width:'100%',padding:'7px',borderRadius:6,border:`1px solid ${C.accent}`,background:'#fff',color:C.accent,fontSize:12.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}
+              onMouseOver={e=>e.currentTarget.style.background=C.accentBg} onMouseOut={e=>e.currentTarget.style.background='#fff'}>
+              Upgrade plan
+            </button>
+          </div>
+        </div>
+
+        {/* AI Settings */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:16}}>AI Settings</div>
+          <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:16}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:14,fontWeight:600,color:C.text,marginBottom:4}}>Read Data</div>
+              <div style={{fontSize:13,color:C.textMuted,lineHeight:1.6}}>When enabled, Qwezy AI reads actual data values and responds in natural conversational language — "Your top customer is Ernst Handel with $48,837." When disabled, AI returns raw query results as a table without interpretation.</div>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6,flexShrink:0}}>
+              <div onClick={()=>setDataAccess(!dataAccess)}
+                style={{width:44,height:24,borderRadius:12,background:dataAccess?C.accent:'#CBD5E1',cursor:'pointer',position:'relative',transition:'background .2s',flexShrink:0}}>
+                <div style={{width:20,height:20,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left:dataAccess?22:2,transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,0.2)'}}/>
+              </div>
+              <span style={{fontSize:12,fontWeight:600,color:dataAccess?C.accent:C.textLight}}>{dataAccess?'Enabled':'Disabled'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Team */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Team members</div>
+            <button onClick={()=>setShowInvite(s=>!s)}
+              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Invite</button>
+          </div>
+          {showInvite&&(
+            <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:8,padding:'14px 16px',marginBottom:16,display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Email</div>
+                <input value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} placeholder="colleague@company.com"
+                  style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+              </div>
+              <div style={{width:140}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Role</div>
+                <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)}
+                  style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
+                  {['Viewer','Editor','Admin'].map(r=><option key={r}>{r}</option>)}
+                </select>
+              </div>
+              <button onClick={()=>{setShowInvite(false);setInviteEmail('')}}
+                style={{padding:'7px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Send invite</button>
+            </div>
+          )}
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead>
+              <tr style={{borderBottom:`2px solid ${C.cardBorder}`}}>
+                {['Member','Role','Status','Last active','Queries this cycle'].map(h=>(
+                  <th key={h} style={{padding:'6px 10px',textAlign:'left',fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {USERS.map((u,i)=>(
+                <tr key={u.email} style={{borderBottom:`1px solid #F1F5F9`,background:i%2===0?'#fff':'#FAFCFE'}}>
+                  <td style={{padding:'10px 10px'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10}}>
+                      <div style={{width:32,height:32,borderRadius:'50%',background:C.accentBg,border:`1.5px solid ${C.greenBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,color:C.accent,flexShrink:0}}>{u.initials}</div>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:500,color:C.text}}>{u.name}</div>
+                        <div style={{fontSize:11,color:C.textLight}}>{u.email}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{padding:'10px 10px'}}>
+                    <span style={{fontSize:12,padding:'2px 8px',borderRadius:4,fontWeight:600,
+                      background:u.role==='Admin'?C.accentBg:u.role==='Editor'?'#EFF6FF':'#F5F3FF',
+                      color:u.role==='Admin'?C.accent:u.role==='Editor'?'#3B82F6':'#8B5CF6',
+                      border:`1px solid ${u.role==='Admin'?C.greenBorder:u.role==='Editor'?'#BFDBFE':'#DDD6FE'}`}}>{u.role}</span>
+                  </td>
+                  <td style={{padding:'10px 10px'}}><div style={{display:'flex',alignItems:'center',gap:5}}><div style={{width:6,height:6,borderRadius:'50%',background:u.status==='Active'?C.success:'#CBD5E1'}}/><span style={{fontSize:12.5,color:C.text}}>{u.status}</span></div></td>
+                  <td style={{padding:'10px 10px',fontSize:12.5,color:C.textMuted}}>{u.lastSeen}</td>
+                  <td style={{padding:'10px 10px',fontFamily:"'JetBrains Mono'",fontSize:12.5,color:C.accentDark,fontWeight:500}}>{u.queries}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Role permissions */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Role permissions</div>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {ROLES.map(r=>(
+              <div key={r.role} style={{display:'flex',alignItems:'flex-start',gap:12,padding:'10px 14px',borderRadius:8,border:`1px solid ${C.cardBorder}`,background:'#FAFAFA'}}>
+                <span style={{fontSize:12,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fff',border:`1.5px solid ${r.color}`,color:r.color,flexShrink:0,marginTop:1}}>{r.role}</span>
+                <span style={{fontSize:13,color:C.textMuted,lineHeight:1.55}}>{r.desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Database */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Database connection</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            {[['Database','Northwind Demo'],['Host','demo.supabase.co'],['Status','Connected'],['Tables','8 tables'],['Last synced','Just now'],['Plan','Demo — read only']].map(([k,v])=>(
+              <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
+                <span style={{fontSize:12.5,color:C.textMuted}}>{k}</span>
+                <span style={{fontSize:12.5,fontWeight:600,color:k==='Status'?C.success:C.text}}>{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Health */}
+          <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>System health</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:10,marginBottom:14}}>
+              {[['Queries Run','127','This cycle'],['Tables','8/8','All healthy'],['AI Response','Active','Via Qwezy AI'],['Members','3','Demo']].map(([l,v,s])=>(
+                <div key={l} style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:'11px 13px'}}>
+                  <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>{l}</div>
+                  <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:1}}>{v}</div>
+                  <div style={{fontSize:11,color:C.success,fontWeight:500}}>{s}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <div style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:12}}>
+                <div style={{fontWeight:600,fontSize:13,color:C.text,marginBottom:10}}>Table Health</div>
+                {TABLES.map((t,i)=>(
+                  <div key={t.name} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <span style={{fontFamily:"'JetBrains Mono'",fontSize:10,color:C.text,width:90,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}</span>
+                    <div style={{flex:1,height:4,background:'#E5E7EB',borderRadius:3,overflow:'hidden'}}>
+                      <div style={{height:'100%',background:t.color,borderRadius:3,width:`${85+(i*3)%15}%`}}/>
+                    </div>
+                    <span style={{fontSize:10,fontWeight:600,color:C.textMuted,width:28,textAlign:'right'}}>{85+(i*3)%15}%</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{background:C.codeBg,borderRadius:8,padding:12,border:'1px solid #21262D'}}>
+                <div style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:'#3FB950',fontWeight:600,marginBottom:10}}>Query costs</div>
+                {[['Per NL query','~$0.03'],['Direct SQL','~$0.00'],['Follow-up','~$0.04'],['Per 100 queries','~$1.50']].map(([k,v],i)=>(
+                  <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:i<3?'1px solid #21262D':'none'}}>
+                    <span style={{fontSize:12,color:i===3?'#E6EDF3':'#484F58',fontWeight:i===3?600:400}}>{k}</span>
+                    <span style={{fontSize:12,fontFamily:"'JetBrains Mono'",color:i===3?'#fff':'#3FB950',fontWeight:i===3?600:400}}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+        {/* Help */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Help</div>
+          <button onClick={onReplayTour}
+            style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',borderRadius:7,border:`1px solid ${C.cardBorder}`,background:'#F8FAFD',cursor:'pointer',fontFamily:'Inter,sans-serif',width:'100%',textAlign:'left'}}
+            onMouseOver={e=>e.currentTarget.style.background=C.accentBg} onMouseOut={e=>e.currentTarget.style.background='#F8FAFD'}>
+            <span style={{fontSize:18}}>🎯</span>
+            <div>
+              <div style={{fontSize:13,fontWeight:600,color:C.text}}>Replay product tour</div>
+              <div style={{fontSize:12,color:C.textMuted}}>Walk through Qwezy features step by step</div>
+            </div>
+          </button>
+        </div>
+
+      </div>
+    </div>
+  )
+}
+
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const router=useRouter()
@@ -2202,6 +3085,9 @@ export default function Dashboard() {
   const [sideWidth,setSideWidth]=useState(200)
   const [reportResults,setReportResults]=useState<Record<string,ReportResult>>(()=>reportCache)
   const [askQ,setAskQ]=useState('')
+  const [gridTable,setGridTable]=useState<any>(null)
+  const [showAdmin,setShowAdmin]=useState(false)
+  const [dataAccess,setDataAccess]=useState(true)
   const dragSide=useRef(false)
 
   useEffect(()=>{try{sessionStorage.setItem('qwezy_tab',tab)}catch{}},[tab])
@@ -2241,8 +3127,6 @@ export default function Dashboard() {
     {id:'dashboard',label:'Dashboards'},
     {id:'reports',label:'Reports'},
     {id:'explorer',label:'Explorer'},
-    {id:'relationships',label:'Schema'},
-    {id:'stats',label:'Health'},
   ]
 
   return(
@@ -2270,7 +3154,8 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
-        <button onClick={()=>{setShowTour(true);try{sessionStorage.removeItem('qwezy_tour_done')}catch{}}} style={{fontSize:12.5,color:C.navText,background:'none',border:`1px solid ${C.navBorder}`,borderRadius:5,padding:'4px 10px',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0,marginRight:6}} title="Take a tour">?</button>
+
+        <button onClick={()=>setTab('admin')} style={{fontSize:12.5,color:tab==='admin'?'#fff':C.navText,background:'none',border:`1px solid ${C.navBorder}`,borderRadius:5,padding:'4px 10px',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0,marginRight:6}}>Admin</button>
         <button onClick={signOut} style={{fontSize:12.5,color:C.navText,background:'none',border:`1px solid ${C.navBorder}`,borderRadius:5,padding:'4px 11px',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0}}>Sign out</button>
       </nav>
 
@@ -2278,7 +3163,7 @@ export default function Dashboard() {
       <div style={{flex:1,display:'flex',overflow:'hidden',position:'relative'}}>
 
         {/* Sidebar */}
-        <aside style={{width:sideCollapsed?0:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:sideCollapsed?'width .15s':'none',position:'relative'}}>
+        <aside style={{width:sideCollapsed?24:sideWidth,minWidth:sideCollapsed?24:undefined,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:'width .15s',position:'relative'}}>
           {!sideCollapsed&&(
             <>
               <div style={{padding:'9px 9px 6px',borderBottom:`1px solid ${C.sidebarBorder}`,background:'#FAFCFE',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -2289,7 +3174,7 @@ export default function Dashboard() {
                 {TABLES.map(tbl=>(
                   <div key={tbl.name}
                     style={{display:'flex',alignItems:'center',gap:6,padding:'6px 7px',borderRadius:5,marginBottom:2,cursor:'pointer'}}
-                    onClick={()=>setDrawerTable(tbl)} onContextMenu={e=>handleRightClick(e,tbl)}
+                    onClick={()=>setDrawerTable(tbl)} onContextMenu={e=>handleRightClick(e,tbl)} onDoubleClick={()=>setGridTable(tbl)}
                     onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='transparent'}>
                     <div style={{width:7,height:7,borderRadius:'50%',background:tbl.color,flexShrink:0}}/>
                     <div style={{flex:1,minWidth:0}}>
@@ -2314,62 +3199,35 @@ export default function Dashboard() {
             </>
           )}
           {sideCollapsed&&(
-            <button onClick={()=>setSideCollapsed(false)} style={{width:'100%',height:48,background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,borderBottom:`1px solid ${C.sidebarBorder}`}}>›</button>
+            <div style={{display:'flex',flexDirection:'column',alignItems:'center',paddingTop:12,gap:8}}>
+              <button onClick={()=>setSideCollapsed(false)}
+                style={{width:22,height:22,background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:5,color:C.accent,cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700}}
+                title="Show tables">›</button>
+            </div>
           )}
         </aside>
 
         {/* Main content */}
         <main style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+          {gridTable&&<TableGridView table={gridTable} onClose={()=>setGridTable(null)} dataAccess={dataAccess}/>}
+          {!gridTable&&<>
           {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}}/>}
           {tab==='builder'&&<BuilderTab/>}
           {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
           {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick}/>}
-          {tab==='relationships'&&<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram onTableClick={t=>setDrawerTable(t)}/></div>}
           {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult}/></div>}
-          {tab==='stats'&&(
-            <div style={{flex:1,overflowY:'auto',padding:24}}>
-              <div style={{marginBottom:16}}><h2 style={{fontSize:17,fontWeight:700,color:C.text}}>Usage & Health</h2><p style={{fontSize:12.5,color:C.textMuted,marginTop:2}}>Northwind Demo · {new Date().toLocaleDateString('en-US',{month:'long',year:'numeric'})}</p></div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(165px,1fr))',gap:10,marginBottom:16}}>
-                {[['Queries Run','—','Connected'],['Tables','8/8','All annotated'],['Response','—','Via Qwezy AI'],['Members','1','Demo mode']].map(([l,v,s])=>(
-                  <div key={l} style={{background:'#fff',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:'13px 15px'}}>
-                    <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>{l}</div>
-                    <div style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:2}}>{v}</div>
-                    <div style={{fontSize:11,color:C.success,fontWeight:500}}>{s}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                <div style={{background:'#fff',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:14}}>
-                  <div style={{fontWeight:600,fontSize:13.5,color:C.text,marginBottom:11}}>Table Health</div>
-                  {TABLES.map((t,i)=>(
-                    <div key={t.name} style={{display:'flex',alignItems:'center',gap:8,marginBottom:7}}>
-                      <span style={{fontFamily:"'JetBrains Mono'",fontSize:10.5,color:C.text,width:75,flexShrink:0}}>{t.name}</span>
-                      <div style={{flex:1,height:4,background:C.bg,borderRadius:3,overflow:'hidden'}}>
-                        <div style={{height:'100%',background:`linear-gradient(90deg,${t.color},${t.color}cc)`,borderRadius:3,width:`${85+(i*3)%15}%`}}/>
-                      </div>
-                      <span style={{fontSize:10.5,fontWeight:600,color:C.textMuted,width:30,textAlign:'right'}}>{85+(i*3)%15}%</span>
-                    </div>
-                  ))}
-                </div>
-                <div style={{background:C.codeBg,borderRadius:8,padding:14,border:'1px solid #21262D'}}>
-                  <div style={{fontFamily:"'JetBrains Mono'",fontSize:11.5,color:'#3FB950',fontWeight:600,marginBottom:11}}>Query Performance</div>
-                  {[['Per NL query','~$0.03'],['Direct SQL','~$0.00'],['Follow-up','~$0.04'],['Per 100 queries','~$1.50']].map(([k,v],i)=>(
-                    <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:i<3?'1px solid #21262D':'none'}}>
-                      <span style={{fontSize:12.5,color:i===3?'#E6EDF3':'#484F58',fontWeight:i===3?600:400}}>{k}</span>
-                      <span style={{fontSize:12.5,fontFamily:"'JetBrains Mono'",color:i===3?'#fff':'#3FB950',fontWeight:i===3?600:400}}>{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+          {tab==='admin'&&(
+            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{sessionStorage.removeItem('qwezy_tour_done')}catch{}}}/>
           )}
+
+          </>}
         </main>
       </div>
 
       {/* Overlays */}
       {drawerTable&&<TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
-      {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}}/>}
+      {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}} onGrid={t=>{setGridTable(t);setContextMenu(null)}}/>}
       {showTour&&<TourOverlay onFinish={()=>{setShowTour(false);try{sessionStorage.setItem('qwezy_tour_done','1')}catch{}}} onTabSwitch={t=>setTab(t)}/>}
     </div>
   )
