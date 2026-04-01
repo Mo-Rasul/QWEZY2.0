@@ -24,101 +24,60 @@ export async function POST(req: NextRequest) {
 
     if (companyError) throw new Error(companyError.message)
 
-    // 2. Create Supabase auth user
-    const tempPassword = generateTempPassword()
-    const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email: adminEmail,
-      password: tempPassword,
-      email_confirm: true,
-    })
+    // 2. Find or create Supabase auth user
+    // If they already registered via demo form, reuse their account
+    let userId: string
+    let isExistingUser = false
+    let tempPassword = ''
 
-    if (authError) {
-      // Rollback company
-      await supabaseAdmin.from('companies').delete().eq('id', company.id)
-      throw new Error(authError.message)
+    const { data: { users: allUsers } } = await supabaseAdmin.auth.admin.listUsers()
+    const existingAuthUser = allUsers?.find((u: any) => u.email === adminEmail)
+
+    if (existingAuthUser) {
+      userId = existingAuthUser.id
+      isExistingUser = true
+      // Update their existing profile to point to the new company
+      const { data: existingProfile } = await supabaseAdmin.from('users').select('id').eq('id', userId).single()
+      if (existingProfile) {
+        await supabaseAdmin.from('users').update({ company_id: company.id, name: adminName, role: 'admin', status: 'active' }).eq('id', userId)
+      } else {
+        await supabaseAdmin.from('users').insert({ id: userId, company_id: company.id, email: adminEmail, name: adminName, role: 'admin', status: 'active' })
+      }
+    } else {
+      tempPassword = generateTempPassword()
+      const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({ email: adminEmail, password: tempPassword, email_confirm: true })
+      if (authError) { await supabaseAdmin.from('companies').delete().eq('id', company.id); throw new Error(authError.message) }
+      userId = authUser.user.id
+      const { error: profileError } = await supabaseAdmin.from('users').insert({ id: userId, company_id: company.id, email: adminEmail, name: adminName, role: 'admin', status: 'active' })
+      if (profileError) { await supabaseAdmin.auth.admin.deleteUser(userId); await supabaseAdmin.from('companies').delete().eq('id', company.id); throw new Error(profileError.message) }
     }
 
-    // 3. Create user profile
-    const { error: profileError } = await supabaseAdmin
-      .from('users')
-      .insert({
-        id: authUser.user.id,
-        company_id: company.id,
-        email: adminEmail,
-        name: adminName,
-        role: 'admin',
-        status: 'active',
-      })
-
-    if (profileError) {
-      await supabaseAdmin.auth.admin.deleteUser(authUser.user.id)
-      await supabaseAdmin.from('companies').delete().eq('id', company.id)
-      throw new Error(profileError.message)
-    }
-
-    // 4. Send welcome email
+    // 3. Send welcome email
     const onboardingUrl = `${process.env.NEXT_PUBLIC_APP_URL}/onboarding`
-    const loginUrl = `${process.env.NEXT_PUBLIC_APP_URL}/login`
+    let credentialsHtml = ''
+    if (isExistingUser) {
+      const { data: resetData } = await supabaseAdmin.auth.admin.generateLink({ type: 'recovery', email: adminEmail })
+      const resetUrl = resetData?.properties?.action_link || `${process.env.NEXT_PUBLIC_APP_URL}/login`
+      credentialsHtml = `<div style="background:#f8fafd;border:1px solid #e5e7eb;border-radius:10px;padding:22px 24px;margin-bottom:28px;"><p style="font-size:14px;color:#374151;margin-bottom:14px;">You already have a Qwezy account. Your workspace has been upgraded to <strong>${companyName}</strong>.</p><a href="${resetUrl}" style="display:inline-block;background:#059669;color:#fff;text-decoration:none;padding:10px 22px;border-radius:7px;font-weight:600;font-size:13.5px;">Log in to Qwezy →</a></div>`
+    } else {
+      credentialsHtml = `<div style="background:#f8fafd;border:1px solid #e5e7eb;border-radius:10px;padding:22px 24px;margin-bottom:28px;"><div style="margin-bottom:12px;"><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;font-weight:600;margin-bottom:3px;">Email</div><div style="font-size:15px;font-weight:500;">${adminEmail}</div></div><div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;font-weight:600;margin-bottom:3px;">Temporary password</div><div style="font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;color:#059669;letter-spacing:2px;">${tempPassword}</div></div></div><p style="color:#6b7280;font-size:13.5px;margin-bottom:24px;">Please change your password after first login.</p>`
+    }
 
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-      from: 'Mo at Qwezy <mo@qwezy.io>',
-      to: adminEmail,
-      subject: `Welcome to Qwezy — your account is ready`,
-      html: `
-        <div style="font-family: Inter, sans-serif; max-width: 520px; margin: 0 auto; padding: 40px 24px; color: #1a1a1a;">
-          <div style="margin-bottom: 32px;">
-            <span style="font-size: 24px; font-weight: 800; color: #059669; letter-spacing: -0.5px;">Qwezy</span>
-          </div>
-
-          <h1 style="font-size: 24px; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.3px; line-height: 1.3;">
-            Hi ${adminName}, your account is ready.
-          </h1>
-          <p style="color: #6b7280; font-size: 15px; line-height: 1.7; margin-bottom: 28px;">
-            I've set up your ${companyName} workspace on Qwezy. The next step is connecting your database — 
-            it takes about 5 minutes and you'll be querying your data in plain English right after.
-          </p>
-
-          <div style="background: #f8fafd; border: 1px solid #e5e7eb; border-radius: 10px; padding: 22px 24px; margin-bottom: 28px;">
-            <div style="font-size: 11px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 14px;">Your login credentials</div>
-            <div style="margin-bottom: 12px;">
-              <div style="font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 3px;">Email</div>
-              <div style="font-size: 15px; font-weight: 500;">${adminEmail}</div>
-            </div>
-            <div>
-              <div style="font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 3px;">Temporary password</div>
-              <div style="font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700; color: #059669; letter-spacing: 2px;">${tempPassword}</div>
-            </div>
-          </div>
-
-          <p style="color: #6b7280; font-size: 13.5px; margin-bottom: 24px; line-height: 1.6;">
-            Please change your password after your first login. Your team members won't have access until you complete setup and invite them.
-          </p>
-
-          <a href="${onboardingUrl}" style="display: inline-block; background: #059669; color: #fff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 700; font-size: 15px; letter-spacing: -0.2px;">
-            Start setup →
-          </a>
-
-          <div style="margin-top: 40px; padding-top: 24px; border-top: 1px solid #e5e7eb;">
-            <p style="color: #6b7280; font-size: 13px; line-height: 1.6; margin: 0;">
-              Questions? Reply to this email and I'll help you get set up.<br>
-              — Mo, Qwezy
-            </p>
-          </div>
-        </div>
-      `,
+        from: 'Mo at Qwezy <mo@qwezy.io>',
+        to: adminEmail,
+        subject: `Welcome to Qwezy — your ${companyName} workspace is ready`,
+        html: `<div style="font-family:Inter,sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;color:#1a1a1a;"><div style="margin-bottom:32px;"><span style="font-size:24px;font-weight:800;color:#059669;">Qwezy</span></div><h1 style="font-size:24px;font-weight:700;margin-bottom:10px;">Hi ${adminName}, your workspace is ready.</h1><p style="color:#6b7280;font-size:15px;line-height:1.7;margin-bottom:28px;">I've set up your <strong>${companyName}</strong> workspace. Connect your database and you'll be querying your data in plain English within minutes.</p>${credentialsHtml}<a href="${onboardingUrl}" style="display:inline-block;background:#059669;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:700;font-size:15px;">Start setup →</a><div style="margin-top:40px;padding-top:24px;border-top:1px solid #e5e7eb;"><p style="color:#6b7280;font-size:13px;margin:0;">Questions? Reply to this email.<br>— Mo, Qwezy</p></div></div>`,
       }),
     })
 
     return NextResponse.json({
       ok: true,
       company: { id: company.id, name: company.name, plan: company.plan },
-      user: { id: authUser.user.id, email: adminEmail, name: adminName },
+      user: { id: userId, email: adminEmail, name: adminName },
       message: `Account created and welcome email sent to ${adminEmail}`,
     })
 
