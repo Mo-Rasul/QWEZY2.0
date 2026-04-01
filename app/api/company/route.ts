@@ -1,10 +1,6 @@
 // app/api/company/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-app'
-import { Resend } from 'resend'
-
-const resend = new Resend(process.env.RESEND_API_KEY!)
-
 // ── POST: Create a new company + admin user + send welcome email ──────────────
 export async function POST(req: NextRequest) {
   try {
@@ -64,7 +60,13 @@ export async function POST(req: NextRequest) {
     const onboardingUrl = `${process.env.NEXT_PUBLIC_APP_URL}/onboarding`
     const loginUrl = `${process.env.NEXT_PUBLIC_APP_URL}/login`
 
-    await resend.emails.send({
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
       from: 'Mo at Qwezy <mo@qwezy.io>',
       to: adminEmail,
       subject: `Welcome to Qwezy — your account is ready`,
@@ -110,6 +112,7 @@ export async function POST(req: NextRequest) {
           </div>
         </div>
       `,
+      }),
     })
 
     return NextResponse.json({

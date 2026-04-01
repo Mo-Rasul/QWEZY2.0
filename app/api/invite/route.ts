@@ -2,10 +2,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from '@/lib/supabase-app'
-import { Resend } from 'resend'
-
-const resend = new Resend(process.env.RESEND_API_KEY!)
-
 export async function POST(req: NextRequest) {
   try {
     // Verify the requesting user is an admin
@@ -79,7 +75,13 @@ export async function POST(req: NextRequest) {
     // Send invite email via Resend
     const loginUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://qwezy.io'}/login`
 
-    await resend.emails.send({
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
       from: 'Qwezy <noreply@qwezy.io>',
       to: email,
       subject: `You've been invited to ${company?.name || 'Qwezy'}`,
@@ -121,6 +123,7 @@ export async function POST(req: NextRequest) {
           </p>
         </div>
       `,
+      }),
     })
 
     return NextResponse.json({ ok: true, message: `Invite sent to ${email}` })
