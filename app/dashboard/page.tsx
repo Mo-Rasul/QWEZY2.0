@@ -3197,6 +3197,17 @@ export default function Dashboard() {
   const [tab,setTab]=useState<string>('ask')
   const [showTour,setShowTour]=useState(false)
 
+  // Check if user needs onboarding (company exists but no DB connected)
+  useEffect(()=>{
+    const check=async()=>{
+      try{
+        const res=await fetch('/api/company/status')
+        if(res.ok){const d=await res.json();if(d.needs_onboarding)router.push('/onboarding')}
+      }catch{}
+    }
+    check()
+  },[])
+
   // Sync tab + tour from sessionStorage after mount (avoids SSR hydration mismatch)
   useEffect(()=>{
     try{
