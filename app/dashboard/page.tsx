@@ -2938,6 +2938,36 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
 
 
 // ── Admin Page ────────────────────────────────────────────────────────────────
+function InviteButton({email,role,onDone}:{email:string,role:string,onDone:()=>void}) {
+  const [loading,setLoading]=useState(false)
+  const [status,setStatus]=useState<'idle'|'ok'|'error'>('idle')
+  const [msg,setMsg]=useState('')
+
+  const send=async()=>{
+    if(!email.trim()||!email.includes('@')){setMsg('Enter a valid email');setStatus('error');return}
+    setLoading(true);setStatus('idle')
+    try{
+      const res=await fetch('/api/invite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,name:email.split('@')[0],role:role.toLowerCase()})})
+      const d=await res.json()
+      if(!res.ok)throw new Error(d.error)
+      setStatus('ok');setMsg('Invite sent!')
+      setTimeout(()=>{setStatus('idle');setMsg('');onDone()},1500)
+    }catch(e:any){setStatus('error');setMsg(e.message||'Failed to send invite')}
+    finally{setLoading(false)}
+  }
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:4}}>
+      <button onClick={send} disabled={loading||status==='ok'}
+        style={{padding:'7px 16px',borderRadius:6,border:'none',background:status==='ok'?C.success:loading?'#E5E7EB':C.accent,color:loading?C.textLight:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',minWidth:96}}>
+        {loading?'Sending…':status==='ok'?'✓ Sent':'Send invite'}
+      </button>
+      {msg&&<div style={{fontSize:11.5,color:status==='error'?C.danger:C.success,fontWeight:500}}>{msg}</div>}
+    </div>
+  )
+}
+
+
 function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
   const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
   const USERS=[
@@ -3040,8 +3070,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
                   {['Viewer','Editor','Admin'].map(r=><option key={r}>{r}</option>)}
                 </select>
               </div>
-              <button onClick={()=>{setShowInvite(false);setInviteEmail('')}}
-                style={{padding:'7px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Send invite</button>
+              <InviteButton email={inviteEmail} role={inviteRole} onDone={()=>{setShowInvite(false);setInviteEmail('')}}/>
             </div>
           )}
           <table style={{width:'100%',borderCollapse:'collapse'}}>
