@@ -1,50 +1,46 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-const C = {
-  accent:'#059669', accentDark:'#047857', accentBg:'#ECFDF5', accentBorder:'#A7F3D0',
-  text:'#0F1923', textMuted:'#4B5563', textLight:'#9CA3AF',
-  card:'#FFFFFF', cardBorder:'#E5E7EB', bg:'#F9FAFB',
-  navBg:'#022c22',
-}
-
+// ── Types & data ──────────────────────────────────────────────────────────────
 const QUERIES = [
-  'Who are our top 10 customers by revenue this quarter?',
-  'Show monthly revenue broken down by product category',
-  'Which products are below reorder level right now?',
-  'How many orders were shipped late last month?',
-  'What is the average deal size by sales rep?',
-  'Show me customer churn rate compared to last year',
+  'Which clients haven\'t placed an order in 90 days?',
+  'Show me monthly revenue broken down by product category',
+  'Which attorneys are below their billing target this month?',
+  'What\'s our average deal size by sales rep this quarter?',
+  'Which invoices are more than 60 days overdue?',
+  'Show me our top 10 customers by spend this year',
 ]
 
-function useTypingEffect(strings: string[], typingSpeed=40, pauseMs=2200) {
+const DEMO_ROWS = [
+  {customer:'Ernst Handel', revenue:'$48,837', orders:17, country:'Austria'},
+  {customer:'QUICK-Stop', revenue:'$37,216', orders:28, country:'Germany'},
+  {customer:'Save-a-lot', revenue:'$36,310', orders:31, country:'USA'},
+  {customer:'Rattlesnake', revenue:'$21,240', orders:18, country:'USA'},
+  {customer:'Hungry Owl', revenue:'$20,105', orders:19, country:'Austria'},
+]
+
+function useTyping(strings: string[], speed=38, pause=2400) {
   const [display, setDisplay] = useState('')
-  const [strIdx, setStrIdx] = useState(0)
-  const [charIdx, setCharIdx] = useState(0)
-  const [deleting, setDeleting] = useState(false)
+  const [si, setSi] = useState(0)
+  const [ci, setCi] = useState(0)
+  const [del, setDel] = useState(false)
   const [paused, setPaused] = useState(false)
   useEffect(() => {
-    if (paused) {
-      const t = setTimeout(() => { setPaused(false); setDeleting(true) }, pauseMs)
-      return () => clearTimeout(t)
-    }
-    const current = strings[strIdx]
-    if (!deleting) {
-      if (charIdx < current.length) {
-        const t = setTimeout(() => { setDisplay(current.slice(0, charIdx+1)); setCharIdx(c=>c+1) }, typingSpeed)
-        return () => clearTimeout(t)
-      } else { setPaused(true) }
+    if (paused) { const t = setTimeout(() => { setPaused(false); setDel(true) }, pause); return () => clearTimeout(t) }
+    const cur = strings[si]
+    if (!del) {
+      if (ci < cur.length) { const t = setTimeout(() => { setDisplay(cur.slice(0, ci+1)); setCi(c=>c+1) }, speed); return () => clearTimeout(t) }
+      else setPaused(true)
     } else {
-      if (charIdx > 0) {
-        const t = setTimeout(() => { setDisplay(current.slice(0, charIdx-1)); setCharIdx(c=>c-1) }, typingSpeed/2.5)
-        return () => clearTimeout(t)
-      } else { setDeleting(false); setStrIdx(i=>(i+1)%strings.length) }
+      if (ci > 0) { const t = setTimeout(() => { setDisplay(cur.slice(0, ci-1)); setCi(c=>c-1) }, speed/2.5); return () => clearTimeout(t) }
+      else { setDel(false); setSi(i=>(i+1)%strings.length) }
     }
-  }, [charIdx, deleting, paused, strIdx, strings, typingSpeed, pauseMs])
+  }, [ci, del, paused, si])
   return display
 }
 
+// ── Lead form ─────────────────────────────────────────────────────────────────
 function LeadForm({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState({ name:'', email:'', company:'', role:'', teamSize:'', industry:'', useCase:'' })
   const [step, setStep] = useState<'form'|'code'|'welcome'>('form')
@@ -56,325 +52,218 @@ function LeadForm({ onClose }: { onClose: () => void }) {
   const ready = !!form.name && !!form.email && !!form.company && !!form.role
 
   const submitForm = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
+    e.preventDefault(); setLoading(true)
     try {
-      const res = await fetch('/api/demo-access', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(form)
-      })
+      const res = await fetch('/api/demo-access', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(form) })
       const data = await res.json()
-      if (data.codeSent) {
-        setStep('code')
-      } else {
-        setCodeError(data.error || 'Something went wrong')
-      }
-    } catch {
-      setCodeError('Something went wrong. Please try again.')
-    }
+      if (data.codeSent) setStep('code')
+      else setCodeError(data.error || 'Something went wrong')
+    } catch { setCodeError('Something went wrong. Please try again.') }
     setLoading(false)
   }
 
   const submitCode = async () => {
     const fullCode = code.join('')
     if (fullCode.length !== 6) return
-    setLoading(true)
-    setCodeError('')
+    setLoading(true); setCodeError('')
     try {
-      const res = await fetch('/api/demo-access', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ action:'verify', email: form.email, name: form.name, code: fullCode })
-      })
+      const res = await fetch('/api/demo-access', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'verify', email: form.email, name: form.name, code: fullCode }) })
       const data = await res.json()
-      if (data.ok) {
-        setUserName(data.name || form.name.split(' ')[0])
-        setStep('welcome')
-        setTimeout(() => { window.location.href = '/dashboard' }, 2200)
-      } else {
-        setCodeError(data.error || 'Invalid code. Please try again.')
-        setCode(['','','','','',''])
-      }
-    } catch {
-      setCodeError('Something went wrong. Please try again.')
-    }
+      if (data.ok) { setUserName(data.name || form.name.split(' ')[0]); setStep('welcome'); setTimeout(() => { window.location.href = '/dashboard' }, 2200) }
+      else { setCodeError(data.error || 'Invalid code.'); setCode(['','','','','','']) }
+    } catch { setCodeError('Something went wrong.') }
     setLoading(false)
   }
 
-  const handleCodeInput = (i: number, val: string) => {
-    if (!/^[0-9]*$/.test(val)) return
-    const newCode = [...code]
-    newCode[i] = val.slice(-1)
-    setCode(newCode)
-    if (val && i < 5) {
-      const next = document.getElementById(`otp-${i+1}`)
-      if (next) (next as HTMLInputElement).focus()
+  const handleCodeInput = (val: string, idx: number) => {
+    const digits = val.replace(/\D/g,'')
+    if (digits.length > 1) {
+      const newCode = [...code]
+      for (let i = 0; i < 6 && i < digits.length; i++) newCode[i] = digits[i]
+      setCode(newCode)
+      const el = document.getElementById(`code-${Math.min(5, digits.length-1)}`)
+      if (el) (el as HTMLInputElement).focus()
+      return
     }
-    if (newCode.every(d => d !== '') && val) {
-      setTimeout(() => {
-        const fullCode = newCode.join('')
-        setLoading(true)
-        setCodeError('')
-        fetch('/api/demo-access', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ action:'verify', email: form.email, name: form.name, code: fullCode })
-        }).then(r=>r.json()).then(data => {
-          if (data.ok) {
-            setUserName(data.name || form.name.split(' ')[0])
-            setStep('welcome')
-            setTimeout(() => { window.location.href = '/dashboard' }, 2200)
-          } else {
-            setCodeError(data.error || 'Invalid code. Please try again.')
-            setCode(['','','','','',''])
-            setLoading(false)
-          }
-        }).catch(() => { setCodeError('Something went wrong.'); setLoading(false) })
-      }, 100)
-    }
-  }
-
-  const handleCodeKeyDown = (i: number, e: React.KeyboardEvent) => {
-    if (e.key === 'Backspace' && !code[i] && i > 0) {
-      const prev = document.getElementById(`otp-${i-1}`)
-      if (prev) (prev as HTMLInputElement).focus()
-    }
+    const newCode = [...code]; newCode[idx] = digits; setCode(newCode)
+    if (digits && idx < 5) { const next = document.getElementById(`code-${idx+1}`); if (next) (next as HTMLInputElement).focus() }
   }
 
   return (
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-      <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:500,maxHeight:'92vh',overflow:'auto',boxShadow:'0 24px 64px rgba(0,0,0,0.2)'}}>
-
-        {/* Welcome screen */}
-        {step==='welcome' && (
-          <div style={{padding:48,textAlign:'center'}}>
-            <div style={{width:64,height:64,borderRadius:'50%',background:C.accentBg,border:`2px solid ${C.accent}`,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px',fontSize:28}}>✓</div>
-            <div style={{fontSize:22,fontWeight:800,color:C.text,marginBottom:8}}>Welcome, {userName}!</div>
-            <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:20}}>Taking you to your live demo environment...</div>
-            <div style={{width:28,height:28,border:`3px solid ${C.accentBg}`,borderTop:`3px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite',margin:'0 auto'}}/>
-            <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-          </div>
-        )}
-
-        {/* Code entry screen */}
-        {step==='code' && (
-          <div style={{padding:'28px 28px'}}>
-            <div style={{marginBottom:24}}>
-              <button onClick={()=>setStep('form')} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,marginBottom:16,padding:0,display:'flex',alignItems:'center',gap:5}}>← Back</button>
-              <div style={{fontWeight:700,fontSize:18,color:C.text,marginBottom:6}}>Check your email</div>
-              <div style={{fontSize:13.5,color:C.textMuted,lineHeight:1.6}}>
-                We sent a 6-digit code to <strong style={{color:C.text}}>{form.email}</strong>. Enter it below to access your demo.
-              </div>
+    <div style={{position:'fixed',inset:0,background:'rgba(2,20,12,0.82)',backdropFilter:'blur(8px)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'#fff',borderRadius:16,width:'100%',maxWidth:480,boxShadow:'0 32px 80px rgba(0,0,0,0.28)',overflow:'hidden',fontFamily:'Inter,sans-serif'}}>
+        {step==='form' && <>
+          <div style={{padding:'24px 28px 0',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:800,color:'#0F1923',letterSpacing:'-0.4px',marginBottom:4}}>Try the live demo</div>
+              <div style={{fontSize:14,color:'#6B7280',lineHeight:1.5}}>Your data, connected in 30 seconds.</div>
             </div>
-
-            <div style={{display:'flex',gap:8,justifyContent:'center',marginBottom:20}}>
-              {code.map((digit, i) => (
-                <input
-                  key={i}
-                  id={`otp-${i}`}
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={1}
-                  value={digit}
-                  onChange={e => handleCodeInput(i, e.target.value)}
-                  onKeyDown={e => handleCodeKeyDown(i, e)}
-                  autoFocus={i === 0}
-                  style={{
-                    width:48, height:56, borderRadius:8, textAlign:'center',
-                    border:`2px solid ${digit ? C.accent : '#E5E7EB'}`,
-                    fontSize:22, fontWeight:700, color:C.text,
-                    fontFamily:"'JetBrains Mono',monospace",
-                    outline:'none', transition:'border-color .15s',
-                    background: digit ? C.accentBg : '#fff',
-                  }}
-                  onFocus={e => e.target.style.borderColor=C.accent}
-                  onBlur={e => e.target.style.borderColor=digit ? C.accent : '#E5E7EB'}
-                />
+            <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:'#9CA3AF',cursor:'pointer',lineHeight:1,padding:'0 0 0 12px'}}>×</button>
+          </div>
+          <form onSubmit={submitForm} style={{padding:'20px 28px 28px',display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              {[['name','Your name','text'],['email','Work email','email'],['company','Company name','text']].slice(0,2).map(([k,ph,t])=>(
+                <div key={k}>
+                  <input value={(form as any)[k]} onChange={e=>set(k,e.target.value)} placeholder={ph} type={t} required
+                    style={{width:'100%',padding:'9px 12px',borderRadius:8,border:'1.5px solid #E5E7EB',fontSize:14,color:'#0F1923',fontFamily:'Inter,sans-serif',outline:'none'}}
+                    onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+                </div>
               ))}
             </div>
-
-            {codeError && (
-              <div style={{padding:'9px 12px',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:7,fontSize:13,color:'#EF4444',marginBottom:14,textAlign:'center'}}>
-                {codeError}
-              </div>
-            )}
-
-            <button onClick={submitCode} disabled={loading || code.join('').length !== 6}
-              style={{width:'100%',background:code.join('').length===6&&!loading?C.accent:'#E5E7EB',color:code.join('').length===6&&!loading?'#fff':C.textLight,border:'none',borderRadius:8,padding:'12px',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',marginBottom:14}}>
-              {loading ? 'Verifying...' : 'Verify and enter demo'}
+            {[['company','Company name','text'],['role','Your role','text']].map(([k,ph,t])=>(
+              <input key={k} value={(form as any)[k]} onChange={e=>set(k,e.target.value)} placeholder={ph} type={t} required
+                style={{width:'100%',padding:'9px 12px',borderRadius:8,border:'1.5px solid #E5E7EB',fontSize:14,color:'#0F1923',fontFamily:'Inter,sans-serif',outline:'none'}}
+                onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+            ))}
+            <select value={form.teamSize} onChange={e=>set('teamSize',e.target.value)}
+              style={{width:'100%',padding:'9px 12px',borderRadius:8,border:'1.5px solid #E5E7EB',fontSize:14,color:form.teamSize?'#0F1923':'#9CA3AF',fontFamily:'Inter,sans-serif',background:'#fff',outline:'none'}}>
+              <option value="">Team size</option>
+              {['1-5','6-15','16-50','51-200','200+'].map(s=><option key={s}>{s}</option>)}
+            </select>
+            {codeError && <div style={{fontSize:13,color:'#EF4444',padding:'8px 12px',background:'#FEF2F2',borderRadius:7}}>{codeError}</div>}
+            <button type="submit" disabled={!ready||loading}
+              style={{background:ready&&!loading?'#059669':'#E5E7EB',color:ready&&!loading?'#fff':'#9CA3AF',border:'none',borderRadius:9,padding:'12px',fontSize:15,fontWeight:700,cursor:ready?'pointer':'default',fontFamily:'Inter,sans-serif',marginTop:4}}>
+              {loading?'Sending…':'Get instant access →'}
             </button>
+            <div style={{fontSize:12,color:'#9CA3AF',textAlign:'center'}}>No credit card · No setup · Live data immediately</div>
+          </form>
+        </>}
 
-            <div style={{textAlign:'center',fontSize:13,color:C.textLight}}>
-              Didn't get a code?{' '}
-              <button onClick={submitForm} style={{background:'none',border:'none',color:C.accent,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,fontWeight:600,textDecoration:'underline'}}>
-                Resend
-              </button>
+        {step==='code' && (
+          <div style={{padding:'32px 28px',textAlign:'center'}}>
+            <div style={{fontSize:36,marginBottom:14}}>📬</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#0F1923',marginBottom:6}}>Check your email</div>
+            <div style={{fontSize:14,color:'#6B7280',marginBottom:24,lineHeight:1.6}}>We sent a 6-digit code to <strong>{form.email}</strong></div>
+            <div style={{display:'flex',gap:8,justifyContent:'center',marginBottom:20}}>
+              {code.map((d,i)=>(
+                <input key={i} id={`code-${i}`} value={d} maxLength={6} inputMode="numeric"
+                  onChange={e=>handleCodeInput(e.target.value,i)}
+                  onKeyDown={e=>{if(e.key==='Backspace'&&!code[i]&&i>0){const prev=document.getElementById(`code-${i-1}`);if(prev)(prev as HTMLInputElement).focus()}}}
+                  style={{width:46,height:52,textAlign:'center',fontSize:22,fontWeight:700,borderRadius:9,border:'2px solid #E5E7EB',color:'#0F1923',fontFamily:"'JetBrains Mono',monospace",outline:'none'}}
+                  onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
+              ))}
             </div>
+            {codeError && <div style={{fontSize:13,color:'#EF4444',marginBottom:14}}>{codeError}</div>}
+            <button onClick={submitCode} disabled={code.join('').length!==6||loading}
+              style={{background:'#059669',color:'#fff',border:'none',borderRadius:9,padding:'12px 28px',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',opacity:code.join('').length===6?1:0.5}}>
+              {loading?'Verifying…':'Verify & continue →'}
+            </button>
           </div>
         )}
 
-        {/* Main form */}
-        {step==='form' && (
-          <>
-            <div style={{padding:'20px 24px',borderBottom:'1px solid #F3F4F6',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,background:'#fff',zIndex:1}}>
-              <div>
-                <div style={{fontWeight:700,fontSize:16,color:C.text}}>Try Qwezy free</div>
-                <div style={{fontSize:12.5,color:C.textLight,marginTop:1}}>Get instant access to a live demo environment</div>
-              </div>
-              <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:C.textLight,cursor:'pointer',lineHeight:1}}>x</button>
-            </div>
-            <form onSubmit={submitForm} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                <div>
-                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Full name</label>
-                  <input value={form.name} onChange={e=>set('name',e.target.value)} placeholder="Jane Smith" required
-                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
-                    onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-                </div>
-                <div>
-                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Work email</label>
-                  <input type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="jane@company.com" required
-                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
-                    onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-                </div>
-              </div>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Company</label>
-                <input value={form.company} onChange={e=>set('company',e.target.value)} placeholder="Acme Inc." required
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif'}}
-                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                <div>
-                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Your role</label>
-                  <select value={form.role} onChange={e=>set('role',e.target.value)} required
-                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.role?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                    <option value="">Select...</option>
-                    {['Data Analyst','Data Engineer','BI / Analytics Lead','Product Manager','Engineering','CEO / Founder','Finance','Operations','Other'].map(r=><option key={r}>{r}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Team size</label>
-                  <select value={form.teamSize} onChange={e=>set('teamSize',e.target.value)}
-                    style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.teamSize?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                    <option value="">Select...</option>
-                    {['Just me','2-5','6-20','21-100','100+'].map(s=><option key={s}>{s}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Industry</label>
-                <select value={form.industry} onChange={e=>set('industry',e.target.value)}
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:form.industry?C.text:C.textLight,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                  <option value="">Select...</option>
-                  {['SaaS / Software','E-commerce / Retail','Finance / Fintech','Media & Entertainment','Healthcare','Manufacturing','Logistics','Real Estate','Other'].map(i=><option key={i}>{i}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{fontSize:11.5,fontWeight:600,color:C.textMuted,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Primary use case</label>
-                <textarea value={form.useCase} onChange={e=>set('useCase',e.target.value)} placeholder="e.g. Revenue reporting, customer analytics..." rows={2}
-                  style={{width:'100%',padding:'9px 12px',borderRadius:7,border:'1.5px solid #E5E7EB',fontSize:14,color:C.text,fontFamily:'Inter,sans-serif',resize:'vertical',lineHeight:1.5}}
-                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-              </div>
-              <button type="submit" disabled={!ready||loading}
-                style={{background:ready&&!loading?C.accent:'#E5E7EB',color:ready&&!loading?'#fff':C.textLight,border:'none',borderRadius:8,padding:'12px',fontSize:15,fontWeight:700,cursor:ready&&!loading?'pointer':'default',fontFamily:'Inter,sans-serif',marginTop:4}}>
-                {loading?'Sending code...':'Get access - free'}
-              </button>
-              <div style={{fontSize:12,color:C.textLight,textAlign:'center'}}>No spam. We will reach out personally within one business day.</div>
-            </form>
-          </>
+        {step==='welcome' && (
+          <div style={{padding:'40px 28px',textAlign:'center'}}>
+            <div style={{width:64,height:64,borderRadius:'50%',background:'#ECFDF5',border:'3px solid #059669',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 16px',fontSize:28}}>✓</div>
+            <div style={{fontSize:20,fontWeight:800,color:'#0F1923',marginBottom:6}}>Welcome, {userName}!</div>
+            <div style={{fontSize:14,color:'#6B7280',lineHeight:1.6}}>Taking you to your dashboard…</div>
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-const DEMO_RESULT = [
-  {company:'Acme Corp',revenue:'$128,440',orders:94,country:'US'},
-  {company:'Meridian SaaS',revenue:'$107,220',orders:82,country:'UK'},
-  {company:'Volta Commerce',revenue:'$98,010',orders:71,country:'DE'},
-  {company:'Orbis Health',revenue:'$76,550',orders:63,country:'FR'},
-  {company:'Atlas Systems',revenue:'$71,200',orders:58,country:'US'},
-]
-
-function DemoPane({ query }: { query: string }) {
-  const sqlLines = [
-    'SELECT',
-    '  c.company_name,',
-    '  ROUND(SUM(od.unit_price * od.quantity',
-    '        * (1 - od.discount)), 2) AS revenue,',
-    '  COUNT(o.order_id) AS orders,',
-    '  c.country',
-    'FROM customers c',
-    "JOIN orders o ON c.customer_id = o.customer_id",
-    "JOIN order_details od ON o.order_id = od.order_id",
-    "WHERE o.order_date >= DATE_TRUNC('quarter', CURRENT_DATE)",
-    'GROUP BY c.company_name, c.country',
-    'ORDER BY revenue DESC',
-    'LIMIT 10',
-  ]
-  const fields = ['company','revenue','orders','country']
-  const KW = ['SELECT','FROM','JOIN','WHERE','GROUP BY','ORDER BY','LIMIT','ON','AS','AND']
-
+// ── Feature mockups ───────────────────────────────────────────────────────────
+function QueryDemo({ query }: { query: string }) {
   return (
-    <div style={{borderRadius:14,overflow:'hidden',border:'1px solid #E5E7EB',boxShadow:'0 24px 64px rgba(0,0,0,0.12)',background:'#fff'}}>
-      <div style={{background:C.navBg,padding:'11px 16px',display:'flex',alignItems:'center',gap:8}}>
-        <div style={{display:'flex',gap:5}}>
-          {['#FF5F57','#FEBC2E','#28C840'].map(c=><div key={c} style={{width:11,height:11,borderRadius:'50%',background:c}}/>)}
-        </div>
-        <span style={{fontSize:12,color:'#6EE7B7',fontFamily:"'JetBrains Mono',monospace",marginLeft:6,opacity:0.8}}>qwezy.io - live demo</span>
-        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:5,background:'rgba(16,185,129,0.2)',border:'1px solid rgba(16,185,129,0.3)',borderRadius:10,padding:'2px 8px'}}>
-          <div style={{width:5,height:5,borderRadius:'50%',background:'#10B981'}}/>
-          <span style={{fontSize:10.5,color:'#6EE7B7',fontWeight:600}}>Live</span>
+    <div style={{borderRadius:12,overflow:'hidden',border:'1px solid #E5E7EB',boxShadow:'0 20px 60px rgba(0,0,0,0.10)',background:'#fff'}}>
+      <div style={{background:'#022c22',padding:'10px 14px',display:'flex',alignItems:'center',gap:8}}>
+        <div style={{display:'flex',gap:4}}>{['#FF5F57','#FEBC2E','#28C840'].map(c=><div key={c} style={{width:10,height:10,borderRadius:'50%',background:c}}/>)}</div>
+        <span style={{fontSize:11.5,color:'#6EE7B7',fontFamily:"'JetBrains Mono',monospace",marginLeft:4,opacity:0.8}}>qwezy.io</span>
+        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:4,background:'rgba(16,185,129,0.2)',border:'1px solid rgba(16,185,129,0.3)',borderRadius:8,padding:'2px 8px'}}>
+          <div style={{width:5,height:5,borderRadius:'50%',background:'#10B981'}}/><span style={{fontSize:10,color:'#6EE7B7',fontWeight:600}}>Live</span>
         </div>
       </div>
-      <div style={{padding:'14px 18px',borderBottom:'1px solid #F3F4F6',background:'#FAFAFA'}}>
-        <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:7}}>Ask anything about your data</div>
-        <div style={{fontSize:15.5,color:C.text,fontWeight:500,minHeight:24,display:'flex',alignItems:'center'}}>
-          {query}<span style={{display:'inline-block',width:2,height:18,background:C.accent,marginLeft:1,animation:'blink 1s step-end infinite',verticalAlign:'middle'}}/>
+      <div style={{padding:'12px 16px',borderBottom:'1px solid #F3F4F6',background:'#FAFAFA'}}>
+        <div style={{fontSize:11,fontWeight:600,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:6}}>Ask anything about your data</div>
+        <div style={{fontSize:15,color:'#0F1923',fontWeight:500,minHeight:22,display:'flex',alignItems:'center'}}>
+          {query}<span style={{display:'inline-block',width:2,height:16,background:'#059669',marginLeft:1,animation:'blink 1s step-end infinite',verticalAlign:'middle'}}/>
         </div>
       </div>
-      <div style={{background:'#0D1117',padding:'14px 18px'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-          <span style={{fontSize:11,fontWeight:600,color:'#484F58',textTransform:'uppercase',letterSpacing:'0.07em'}}>Generated SQL - 1.2s</span>
-          <span style={{fontSize:11,color:C.accent,fontWeight:600,background:'rgba(5,150,105,0.15)',padding:'2px 8px',borderRadius:4}}>high confidence</span>
-        </div>
-        <pre style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:'#E6EDF3',lineHeight:1.7,margin:0,overflow:'hidden'}}>
-          {sqlLines.map((l,i)=>(
-            <div key={i}>
-              <span style={{color:'#484F58',userSelect:'none',marginRight:14,fontSize:10}}>{String(i+1).padStart(2,'0')}</span>
-              {l.split(new RegExp(`(${KW.join('|')})`, 'g')).map((part,j)=>(
-                KW.includes(part)
-                  ? <span key={j} style={{color:'#FF7B72'}}>{part}</span>
-                  : part.startsWith("'")
-                  ? <span key={j} style={{color:'#A5D6FF'}}>{part}</span>
-                  : <span key={j}>{part}</span>
-              ))}
-            </div>
-          ))}
-        </pre>
-      </div>
-      <div style={{padding:'0'}}>
-        <div style={{padding:'10px 18px',background:'#F8FAFD',borderTop:'1px solid #F3F4F6',borderBottom:'1px solid #F3F4F6',display:'flex',alignItems:'center',gap:10}}>
-          <span style={{fontSize:12,fontWeight:600,color:C.textMuted}}>{DEMO_RESULT.length} rows</span>
-          <span style={{fontSize:11.5,color:C.textLight}}>0.38s</span>
-          <span style={{marginLeft:'auto',fontSize:11.5,color:C.accent,fontWeight:600,cursor:'pointer'}}>Export CSV</span>
-        </div>
+      <div style={{overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse'}}>
           <thead>
             <tr style={{background:'#F8FAFD'}}>
-              {fields.map(f=><th key={f} style={{padding:'8px 18px',textAlign:'left',fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:'1px solid #F3F4F6',whiteSpace:'nowrap'}}>{f}</th>)}
+              {['Customer','Revenue','Orders','Country'].map(h=><th key={h} style={{padding:'8px 14px',textAlign:'left',fontSize:10.5,fontWeight:600,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:'1px solid #F3F4F6',whiteSpace:'nowrap'}}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {DEMO_RESULT.map((row,i)=>(
+            {DEMO_ROWS.map((r,i)=>(
               <tr key={i} style={{borderBottom:'1px solid #F9FAFB',background:i%2===0?'#fff':'#FAFAFA'}}>
-                {fields.map(f=>(
-                  <td key={f} style={{padding:'8px 18px',fontSize:13,color:f==='revenue'?C.accent:C.text,fontWeight:f==='revenue'?600:400,fontFamily:f==='revenue'||f==='orders'?"'JetBrains Mono',monospace":'Inter,sans-serif',whiteSpace:'nowrap'}}>
-                    {(row as any)[f]}
-                  </td>
-                ))}
+                <td style={{padding:'7px 14px',fontSize:13,fontWeight:500,color:'#0F1923'}}>{r.customer}</td>
+                <td style={{padding:'7px 14px',fontSize:13,fontWeight:700,color:'#059669',fontFamily:"'JetBrains Mono',monospace"}}>{r.revenue}</td>
+                <td style={{padding:'7px 14px',fontSize:13,color:'#4B5563',fontFamily:"'JetBrains Mono',monospace"}}>{r.orders}</td>
+                <td style={{padding:'7px 14px',fontSize:13,color:'#4B5563'}}>{r.country}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{padding:'8px 14px',background:'#F8FAFD',display:'flex',alignItems:'center',gap:10,borderTop:'1px solid #F3F4F6'}}>
+        <span style={{fontSize:12,fontWeight:600,color:'#6B7280'}}>5 rows · 0.4s</span>
+        <span style={{marginLeft:'auto',fontSize:12,color:'#059669',fontWeight:600,cursor:'pointer'}}>Export CSV ↓</span>
+      </div>
+    </div>
+  )
+}
+
+function DashboardMockup() {
+  const bars = [65,42,78,55,90,38,72]
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul']
+  return (
+    <div style={{borderRadius:12,overflow:'hidden',border:'1px solid #E5E7EB',boxShadow:'0 12px 40px rgba(0,0,0,0.08)',background:'#fff',padding:'16px'}}>
+      <div style={{fontSize:12,fontWeight:700,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Revenue dashboard · Live</div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:16}}>
+        {[['Total Revenue','$284,516','+12%'],['Active Customers','847','+3%'],['Avg Order Value','$336','+8%']].map(([l,v,d])=>(
+          <div key={l} style={{background:'#F8FAFD',borderRadius:8,padding:'10px 12px',border:'1px solid #E5E7EB'}}>
+            <div style={{fontSize:10,color:'#9CA3AF',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>{l}</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#0F1923',letterSpacing:'-0.5px'}}>{v}</div>
+            <div style={{fontSize:11,color:'#059669',fontWeight:600,marginTop:2}}>{d} vs last month</div>
+          </div>
+        ))}
+      </div>
+      <div style={{background:'#F8FAFD',borderRadius:8,padding:'12px',border:'1px solid #E5E7EB'}}>
+        <div style={{fontSize:11,fontWeight:600,color:'#9CA3AF',marginBottom:10}}>Monthly revenue</div>
+        <div style={{display:'flex',alignItems:'flex-end',gap:6,height:56}}>
+          {bars.map((h,i)=>(
+            <div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+              <div style={{width:'100%',background:i===4?'#059669':'#D1FAE5',borderRadius:'3px 3px 0 0',height:`${h}%`,minHeight:4,transition:'height .3s'}}/>
+              <span style={{fontSize:9,color:'#9CA3AF'}}>{months[i]}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReportMockup() {
+  return (
+    <div style={{borderRadius:12,overflow:'hidden',border:'1px solid #E5E7EB',boxShadow:'0 12px 40px rgba(0,0,0,0.08)',background:'#fff'}}>
+      <div style={{padding:'14px 16px',borderBottom:'1px solid #F3F4F6',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div>
+          <div style={{fontSize:11,fontWeight:600,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}}>Scheduled report</div>
+          <div style={{fontSize:14,fontWeight:700,color:'#0F1923'}}>Weekly Top Customers</div>
+        </div>
+        <div style={{fontSize:11,padding:'3px 9px',borderRadius:10,background:'#ECFDF5',color:'#059669',border:'1px solid #A7F3D0',fontWeight:600}}>Sends Monday 8am</div>
+      </div>
+      <div style={{padding:'10px 16px',background:'#F8FAFD',borderBottom:'1px solid #F3F4F6',fontSize:12,color:'#6B7280'}}>
+        <span style={{fontWeight:600,color:'#0F1923'}}>To:</span> team@company.com, ceo@company.com
+      </div>
+      <div style={{padding:'14px 16px'}}>
+        <div style={{padding:'12px 14px',background:'#F8FAFD',borderLeft:'3px solid #059669',borderRadius:'0 8px 8px 0',marginBottom:12,fontSize:13,color:'#374151',lineHeight:1.65}}>
+          Ernst Handel leads this week with $48,837 across 17 orders. Germany accounts for 3 of your top 8 clients — strong regional concentration.
+        </div>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+          <thead><tr style={{borderBottom:'1px solid #F3F4F6'}}>
+            {['Company','Country','Revenue'].map(h=><th key={h} style={{padding:'5px 8px',textAlign:'left',color:'#9CA3AF',fontWeight:600,textTransform:'uppercase',fontSize:10,letterSpacing:'0.05em'}}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {DEMO_ROWS.slice(0,3).map((r,i)=>(
+              <tr key={i} style={{borderBottom:'1px solid #F9FAFB'}}>
+                <td style={{padding:'6px 8px',fontWeight:500,color:'#0F1923',fontSize:12}}>{r.customer}</td>
+                <td style={{padding:'6px 8px',color:'#6B7280',fontSize:12}}>{r.country}</td>
+                <td style={{padding:'6px 8px',fontWeight:700,color:'#059669',fontFamily:"'JetBrains Mono',monospace",fontSize:12}}>{r.revenue}</td>
               </tr>
             ))}
           </tbody>
@@ -384,194 +273,176 @@ function DemoPane({ query }: { query: string }) {
   )
 }
 
-const STEPS_HOW = [
-  {n:'01', title:'Connect your database', desc:'PostgreSQL, MySQL, Snowflake, BigQuery, Redshift and more. Read-only. Setup in under 5 minutes.', detail:'We never write to your database. Credentials are AES-256 encrypted.'},
-  {n:'02', title:'We learn your schema', desc:'Qwezy scans your tables, identifies joins, and understands your business context.', detail:'You annotate each table with plain-English descriptions. Your AI context is company-isolated.'},
-  {n:'03', title:'Your team asks questions', desc:'Anyone on your team can type a question and get an answer - no SQL knowledge needed.', detail:'Analysts can edit the generated SQL. Everyone else just gets results.'},
-  {n:'04', title:'Build dashboards and reports', desc:'Save queries as reports, schedule them to run automatically, and build shared dashboards.', detail:'Connect live to PowerBI and Tableau. Email results to any distribution list.'},
-]
-
-const TRUST_LOGOS = ['Postgres','MySQL','Snowflake','BigQuery','Redshift','SQL Server']
-
+// ── Main landing page ─────────────────────────────────────────────────────────
 export default function Landing() {
   const router = useRouter()
   const [showForm, setShowForm] = useState(false)
-  const typedQuery = useTypingEffect(QUERIES)
+  const typedQuery = useTyping(QUERIES)
 
   return (
-    <div style={{fontFamily:'Inter,-apple-system,sans-serif',color:C.text,background:'#fff'}}>
+    <div style={{fontFamily:'Inter,-apple-system,sans-serif',color:'#0F1923',background:'#fff'}}>
       <style>{`
         *{box-sizing:border-box;margin:0;padding:0}
         @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
         html{scroll-behavior:smooth}
         a{text-decoration:none}
+        .fade-up{animation:fadeUp .6s ease forwards}
       `}</style>
+
       {showForm && <LeadForm onClose={()=>setShowForm(false)}/>}
 
-      <nav style={{position:'sticky',top:0,zIndex:100,background:'rgba(255,255,255,0.93)',backdropFilter:'blur(12px)',borderBottom:'1px solid #F3F4F6',padding:'0 40px',height:58,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+      {/* Nav */}
+      <nav style={{position:'sticky',top:0,zIndex:100,background:'rgba(255,255,255,0.95)',backdropFilter:'blur(12px)',borderBottom:'1px solid #F3F4F6',padding:'0 40px',height:58,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <div style={{display:'flex',alignItems:'center',gap:9}}>
           <div style={{width:28,height:28,background:'linear-gradient(135deg,#10B981,#059669)',borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center'}}>
             <span style={{color:'#fff',fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:11}}>{'{ }'}</span>
           </div>
-          <span style={{fontWeight:800,fontSize:18,color:C.text,letterSpacing:'-0.3px'}}>Qwezy</span>
+          <span style={{fontWeight:800,fontSize:18,color:'#0F1923',letterSpacing:'-0.3px'}}>Qwezy</span>
         </div>
         <div style={{display:'flex',gap:28,alignItems:'center'}}>
-          {[['How it works','#how'],['Features','#features'],['Security','#security'],['Pricing','#pricing']].map(([l,h])=>(
-            <a key={l} href={h} style={{fontSize:14,color:C.textMuted,fontWeight:500}}>{l}</a>
+          {[['How it works','#how'],['Features','#features'],['Pricing','#pricing']].map(([l,h])=>(
+            <a key={l} href={h} style={{fontSize:14,color:'#4B5563',fontWeight:500}}>{l}</a>
           ))}
         </div>
         <div style={{display:'flex',gap:9,alignItems:'center'}}>
-          <button onClick={()=>router.push('/auth')} style={{fontSize:14,color:C.textMuted,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500,padding:'7px 14px',borderRadius:7}}>Sign in</button>
-          <button onClick={()=>setShowForm(true)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'8px 18px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Request access</button>
+          <button onClick={()=>router.push('/auth')} style={{fontSize:14,color:'#4B5563',background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500,padding:'7px 14px',borderRadius:7}}>Sign in</button>
+          <button onClick={()=>setShowForm(true)} style={{background:'#059669',color:'#fff',border:'none',borderRadius:7,padding:'8px 18px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Request access</button>
         </div>
       </nav>
 
-      <section style={{padding:'80px 40px 0',maxWidth:1140,margin:'0 auto',display:'grid',gridTemplateColumns:'1fr 1.1fr',gap:60,alignItems:'center',minHeight:'calc(100vh - 58px)'}}>
+      {/* Hero */}
+      <section style={{padding:'80px 40px 60px',maxWidth:1140,margin:'0 auto',display:'grid',gridTemplateColumns:'1fr 1.05fr',gap:64,alignItems:'center'}}>
         <div>
-          <div style={{display:'inline-flex',alignItems:'center',gap:7,padding:'5px 12px',borderRadius:20,background:C.accentBg,border:`1px solid ${C.accentBorder}`,marginBottom:28}}>
-            <div style={{width:7,height:7,borderRadius:'50%',background:C.accent}}/>
-            <span style={{fontSize:13,fontWeight:600,color:C.accentDark}}>Early access - limited spots</span>
+          <div style={{display:'inline-flex',alignItems:'center',gap:7,padding:'5px 14px',borderRadius:20,background:'#ECFDF5',border:'1px solid #A7F3D0',marginBottom:28}}>
+            <div style={{width:7,height:7,borderRadius:'50%',background:'#059669'}}/>
+            <span style={{fontSize:13,fontWeight:600,color:'#047857'}}>Built for small businesses</span>
           </div>
-          <h1 style={{fontSize:56,fontWeight:800,color:C.text,letterSpacing:'-1.5px',lineHeight:1.08,marginBottom:22}}>
-            Ask your data<br/>
-            <span style={{color:C.accent}}>anything.</span>
+          <h1 style={{fontSize:52,fontWeight:800,color:'#0F1923',letterSpacing:'-1.5px',lineHeight:1.08,marginBottom:20}}>
+            Act on your data<br/>
+            <span style={{color:'#059669'}}>like the big ones do.</span>
           </h1>
-          <p style={{fontSize:17,color:C.textMuted,lineHeight:1.7,marginBottom:32,maxWidth:460}}>
-            Qwezy translates plain English into SQL and runs it against your database - giving your whole team instant answers without writing a single line of code.
+          <p style={{fontSize:17,color:'#4B5563',lineHeight:1.75,marginBottom:16,maxWidth:460}}>
+            Large companies have data teams, analysts, and dashboards. You have a spreadsheet and a gut feeling. Qwezy fixes that — connect your database and ask anything in plain English.
           </p>
-          <div style={{display:'flex',gap:10,marginBottom:20}}>
-            <button onClick={()=>setShowForm(true)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:9,padding:'14px 26px',fontSize:15.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',boxShadow:'0 4px 20px rgba(5,150,105,0.3)'}}>
-              Try it free - no setup needed
+          <p style={{fontSize:15,color:'#6B7280',lineHeight:1.7,marginBottom:32,maxWidth:440}}>
+            Live dashboards, automated reports, email summaries. The intelligence layer your business never had access to — until now.
+          </p>
+          <div style={{display:'flex',gap:10,marginBottom:16}}>
+            <button onClick={()=>setShowForm(true)} style={{background:'#059669',color:'#fff',border:'none',borderRadius:9,padding:'14px 26px',fontSize:15.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',boxShadow:'0 4px 20px rgba(5,150,105,0.3)'}}>
+              Try it free →
             </button>
-            <button onClick={()=>router.push('/auth')} style={{background:'#fff',color:C.text,border:'1.5px solid #E5E7EB',borderRadius:9,padding:'14px 20px',fontSize:15.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+            <button onClick={()=>router.push('/auth')} style={{background:'#fff',color:'#0F1923',border:'1.5px solid #E5E7EB',borderRadius:9,padding:'14px 20px',fontSize:15.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
               Sign in
             </button>
           </div>
-          <p style={{fontSize:12.5,color:C.textLight}}>No credit card - no setup - live data ready instantly</p>
+          <p style={{fontSize:12.5,color:'#9CA3AF'}}>No credit card · No SQL knowledge needed · Setup in 30 minutes</p>
         </div>
-        <div style={{paddingBottom:16}}>
-          <DemoPane query={typedQuery}/>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,marginTop:14}}>
-            <button onClick={()=>setShowForm(true)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'10px 22px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',boxShadow:'0 2px 12px rgba(5,150,105,0.3)'}}>
-              Try this yourself - free
-            </button>
-            <span style={{fontSize:13,color:C.textLight}}>No setup. Live data. 30 seconds.</span>
-          </div>
+        <div>
+          <QueryDemo query={typedQuery}/>
         </div>
       </section>
 
-      <section style={{padding:'48px 40px',borderTop:'1px solid #F3F4F6',borderBottom:'1px solid #F3F4F6',background:'#FAFAFA'}}>
-        <div style={{maxWidth:900,margin:'0 auto',display:'flex',alignItems:'center',gap:24,flexWrap:'wrap',justifyContent:'center'}}>
-          <span style={{fontSize:13,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginRight:8}}>Connects to</span>
-          {TRUST_LOGOS.map(l=>(
-            <span key={l} style={{fontSize:13.5,fontWeight:600,color:C.textMuted,padding:'6px 14px',borderRadius:7,border:'1px solid #E5E7EB',background:'#fff'}}>{l}</span>
+      {/* DB logos */}
+      <section style={{padding:'36px 40px',borderTop:'1px solid #F3F4F6',borderBottom:'1px solid #F3F4F6',background:'#FAFAFA'}}>
+        <div style={{maxWidth:900,margin:'0 auto',display:'flex',alignItems:'center',gap:20,flexWrap:'wrap',justifyContent:'center'}}>
+          <span style={{fontSize:12.5,fontWeight:600,color:'#9CA3AF',textTransform:'uppercase',letterSpacing:'0.07em',marginRight:8}}>Connects to</span>
+          {['PostgreSQL','MySQL','Neon','Supabase','Snowflake','BigQuery','Redshift','SQL Server'].map(l=>(
+            <span key={l} style={{fontSize:13,fontWeight:600,color:'#4B5563',padding:'5px 13px',borderRadius:7,border:'1px solid #E5E7EB',background:'#fff'}}>{l}</span>
           ))}
         </div>
       </section>
 
-      <section id="how" style={{padding:'96px 40px',maxWidth:1000,margin:'0 auto'}}>
-        <div style={{textAlign:'center',marginBottom:56}}>
-          <h2 style={{fontSize:38,fontWeight:800,color:C.text,letterSpacing:'-0.8px',marginBottom:10}}>How it works</h2>
-          <p style={{fontSize:17,color:C.textMuted,maxWidth:500,margin:'0 auto',lineHeight:1.6}}>From database connection to your first query in under 30 minutes.</p>
-        </div>
-        <div style={{display:'flex',flexDirection:'column',gap:0}}>
-          {STEPS_HOW.map((s,i)=>(
-            <div key={s.n} style={{display:'grid',gridTemplateColumns:'80px 1fr',gap:28,padding:'28px 0',borderBottom:i<STEPS_HOW.length-1?'1px solid #F3F4F6':'none',alignItems:'start'}}>
-              <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:32,fontWeight:800,color:'#E5E7EB',lineHeight:1}}>{s.n}</div>
-              <div>
-                <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:5,letterSpacing:'-0.2px'}}>{s.title}</div>
-                <div style={{fontSize:15,color:C.textMuted,lineHeight:1.6,marginBottom:5}}>{s.desc}</div>
-                <div style={{fontSize:13,color:C.textLight}}>{s.detail}</div>
+      {/* Three pillars */}
+      <section id="features" style={{padding:'96px 40px'}}>
+        <div style={{maxWidth:1100,margin:'0 auto'}}>
+          <div style={{textAlign:'center',marginBottom:64}}>
+            <h2 style={{fontSize:38,fontWeight:800,color:'#0F1923',letterSpacing:'-0.8px',marginBottom:12}}>Everything a large company has.<br/><span style={{color:'#059669'}}>Built for your size.</span></h2>
+            <p style={{fontSize:17,color:'#4B5563',maxWidth:520,margin:'0 auto',lineHeight:1.65}}>Three tools in one. Ask questions, build dashboards, and automate reports — no data team required.</p>
+          </div>
+
+          {/* Feature 1: Ask */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:64,alignItems:'center',marginBottom:96}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:'#059669',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:12}}>01 · Ask</div>
+              <h3 style={{fontSize:30,fontWeight:800,color:'#0F1923',letterSpacing:'-0.5px',lineHeight:1.2,marginBottom:16}}>Ask your data anything.<br/>Get a real answer.</h3>
+              <p style={{fontSize:15.5,color:'#4B5563',lineHeight:1.75,marginBottom:20}}>Type a question. Qwezy writes the SQL, runs it against your live database, and hands you results in seconds. No training needed for your team.</p>
+              <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                {[
+                  'Who are our top 10 customers this quarter?',
+                  'Which invoices are 60+ days overdue?',
+                  'Show me revenue by category vs last year',
+                ].map(q=>(
+                  <div key={q} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#F8FAFD',borderRadius:8,border:'1px solid #E5E7EB',fontSize:13.5,color:'#374151',cursor:'pointer',fontStyle:'italic'}}
+                    onClick={()=>setShowForm(true)}
+                    onMouseOver={e=>{(e.currentTarget as HTMLElement).style.borderColor='#059669';(e.currentTarget as HTMLElement).style.background='#ECFDF5'}}
+                    onMouseOut={e=>{(e.currentTarget as HTMLElement).style.borderColor='#E5E7EB';(e.currentTarget as HTMLElement).style.background='#F8FAFD'}}>
+                    <span style={{color:'#059669',fontWeight:700,flexShrink:0,fontStyle:'normal'}}>→</span>{q}
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
-      </section>
+            <QueryDemo query={typedQuery}/>
+          </div>
 
-      <section style={{padding:'80px 40px',background:'#022c22',position:'relative'}}>
-        <div style={{maxWidth:960,margin:'0 auto',position:'relative'}}>
+          {/* Feature 2: Dashboard */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:64,alignItems:'center',marginBottom:96}}>
+            <DashboardMockup/>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:'#059669',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:12}}>02 · Dashboards</div>
+              <h3 style={{fontSize:30,fontWeight:800,color:'#0F1923',letterSpacing:'-0.5px',lineHeight:1.2,marginBottom:16}}>Live dashboards.<br/>Without a BI team.</h3>
+              <p style={{fontSize:15.5,color:'#4B5563',lineHeight:1.75,marginBottom:20}}>Turn any query into a chart. Build a dashboard your team can check every morning — KPIs, trends, and tables, all pulling from your live database.</p>
+              <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                {['Revenue trends by month','KPI cards that update in real time','Multiple dashboard pages for different teams','Bar, line, stacked, and table views'].map(f=>(
+                  <div key={f} style={{display:'flex',alignItems:'center',gap:9}}>
+                    <span style={{color:'#059669',fontWeight:700,fontSize:13,flexShrink:0}}>+</span>
+                    <span style={{fontSize:14,color:'#374151'}}>{f}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Feature 3: Reports */}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:64,alignItems:'center'}}>
             <div>
-              <div style={{display:'inline-flex',alignItems:'center',gap:7,padding:'5px 12px',borderRadius:20,background:'rgba(16,185,129,0.15)',border:'1px solid rgba(16,185,129,0.3)',marginBottom:20}}>
-                <div style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>
-                <span style={{fontSize:13,fontWeight:600,color:'#6EE7B7'}}>Your data never leaves your control</span>
-              </div>
-              <h2 style={{fontSize:40,fontWeight:800,color:'#fff',letterSpacing:'-1px',lineHeight:1.1,marginBottom:18}}>
-                Qwezy understands<br/>your data.<br/>
-                <span style={{color:'#34D399'}}>Nobody else does.</span>
-              </h2>
-              <p style={{fontSize:16,color:'#6EE7B7',lineHeight:1.75,marginBottom:24}}>
-                Most AI tools send your queries and fragments of your data to a shared model. Qwezy works differently. We learn your schema, your business terminology, and your join logic once, during onboarding. That context is stored privately, per company, and injected locally into every query.
-              </p>
-              <p style={{fontSize:16,color:'rgba(110,231,183,0.75)',lineHeight:1.75}}>
-                The result: Qwezy can write complex, multi-table SQL accurate to your specific business - without ever seeing your actual data rows, and without sharing anything across organisations.
-              </p>
-            </div>
-            <div style={{display:'flex',flexDirection:'column',gap:12}}>
-              {[
-                {label:'Your question', value:'Who are our top customers this quarter?', color:'#fff', icon:'Q', note:'Stays in your session'},
-                {label:'Your private context', value:'Table annotations, join paths, business rules, metric definitions', color:'#34D399', icon:'L', note:'Stored per company - never shared'},
-                {label:'Generated SQL', value:'SELECT ... FROM orders JOIN customers ... WHERE ...', color:'#6EE7B7', icon:'S', note:'Built from your context'},
-                {label:'Your database', value:'Read-only query. No data extracted. No training.', color:'#A7F3D0', icon:'D', note:'We never see your rows'},
-              ].map((row,i)=>(
-                <div key={i} style={{background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10,padding:'14px 18px',display:'flex',gap:14,alignItems:'flex-start'}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:11,fontWeight:600,color:'rgba(110,231,183,0.6)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:4}}>{row.label}</div>
-                    <div style={{fontSize:13,color:row.color,lineHeight:1.5,marginBottom:3}}>{row.value}</div>
-                    <div style={{fontSize:11.5,color:'rgba(255,255,255,0.35)'}}>{row.note}</div>
+              <div style={{fontSize:11,fontWeight:700,color:'#059669',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:12}}>03 · Reports</div>
+              <h3 style={{fontSize:30,fontWeight:800,color:'#0F1923',letterSpacing:'-0.5px',lineHeight:1.2,marginBottom:16}}>Automated reports.<br/>Delivered to your inbox.</h3>
+              <p style={{fontSize:15.5,color:'#4B5563',lineHeight:1.75,marginBottom:20}}>Schedule any report to run daily, weekly, or monthly. Results land in your team's inbox automatically — with an AI summary that calls out what matters.</p>
+              <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                {['Daily, weekly, or monthly schedule','AI-written summary of key trends','Send to any email list','Export to CSV, PowerBI, or Tableau'].map(f=>(
+                  <div key={f} style={{display:'flex',alignItems:'center',gap:9}}>
+                    <span style={{color:'#059669',fontWeight:700,fontSize:13,flexShrink:0}}>+</span>
+                    <span style={{fontSize:14,color:'#374151'}}>{f}</span>
                   </div>
-                </div>
-              ))}
-              <div style={{padding:'12px 16px',borderRadius:8,background:'rgba(52,211,153,0.1)',border:'1px solid rgba(52,211,153,0.25)',fontSize:13,color:'#34D399',lineHeight:1.55,textAlign:'center',fontWeight:500}}>
-                Every company's AI context is fully isolated - end to end
+                ))}
               </div>
             </div>
+            <ReportMockup/>
           </div>
         </div>
       </section>
 
-      <section id="features" style={{padding:'80px 40px',background:C.bg}}>
-        <div style={{maxWidth:1000,margin:'0 auto'}}>
+      {/* How it works */}
+      <section id="how" style={{padding:'80px 40px',background:'#F9FAFB',borderTop:'1px solid #F3F4F6'}}>
+        <div style={{maxWidth:860,margin:'0 auto'}}>
           <div style={{textAlign:'center',marginBottom:52}}>
-            <h2 style={{fontSize:36,fontWeight:800,color:C.text,letterSpacing:'-0.7px',marginBottom:10}}>Built for the whole team</h2>
-            <p style={{fontSize:17,color:C.textMuted,maxWidth:500,margin:'0 auto',lineHeight:1.6}}>Analysts get SQL they can edit. Everyone else just gets answers.</p>
+            <h2 style={{fontSize:36,fontWeight:800,color:'#0F1923',letterSpacing:'-0.7px',marginBottom:10}}>Up and running in 30 minutes</h2>
+            <p style={{fontSize:16,color:'#4B5563',lineHeight:1.6}}>We onboard every new customer personally. Your first dashboard is included.</p>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16}}>
+          <div style={{display:'flex',flexDirection:'column',gap:0}}>
             {[
-              {title:'Natural language queries', desc:'Ask any question in plain English. Qwezy generates SQL, runs it, and returns results in seconds.'},
-              {title:'SQL editor for analysts', desc:'Every generated query is editable. Inspect, tweak, and re-run with line numbers and a copy button.'},
-              {title:'Live dashboards', desc:'Build a dashboard from any query. Drag to resize, choose chart type. Create multiple pages and share with your team.'},
-              {title:'Scheduled reports', desc:'Set any report to run daily, weekly, or monthly. Results land in your inbox or Slack automatically.'},
-              {title:'BI tool integration', desc:'Expose any report as a live JSON or CSV endpoint. Connect directly to PowerBI, Tableau, Google Sheets, or Excel.'},
-              {title:'Company-isolated AI', desc:'Your annotations and query history are fully isolated per organisation. Your data never trains our models.'},
-            ].map(f=>(
-              <div key={f.title} style={{background:'#fff',borderRadius:12,padding:24,border:'1px solid #E5E7EB'}}>
-                <div style={{width:10,height:10,borderRadius:'50%',background:C.accent,marginBottom:12}}/>
-                <div style={{fontSize:15.5,fontWeight:700,color:C.text,marginBottom:7,letterSpacing:'-0.2px'}}>{f.title}</div>
-                <div style={{fontSize:13.5,color:C.textMuted,lineHeight:1.65}}>{f.desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section style={{padding:'80px 40px'}}>
-        <div style={{maxWidth:1000,margin:'0 auto'}}>
-          <div style={{textAlign:'center',marginBottom:48}}>
-            <h2 style={{fontSize:32,fontWeight:800,color:C.text,letterSpacing:'-0.6px'}}>What early users say</h2>
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:18}}>
-            {[
-              {q:'We went from a 3-day turnaround on data requests to 30 seconds. It changed how our entire finance team operates.',name:'Sarah Chen',role:'VP Finance',co:'Meridian SaaS'},
-              {q:'Our analysts used to spend half their time writing the same queries. Now they focus on insight, not SQL syntax.',name:'James Okafor',role:'Head of Analytics',co:'Volta Commerce'},
-              {q:'Setup took 20 minutes. By end of day our sales team was querying the CRM without any training at all.',name:'Maria Santos',role:'Chief of Staff',co:'Orbis Health'},
-            ].map(t=>(
-              <div key={t.name} style={{background:C.bg,borderRadius:12,padding:24,border:'1px solid #E5E7EB',display:'flex',flexDirection:'column',gap:16}}>
-                <p style={{fontSize:14.5,color:C.text,lineHeight:1.7,flex:1}}>"{t.q}"</p>
+              {n:'01',title:'Connect your database',desc:'PostgreSQL, MySQL, Neon, Supabase, Snowflake and more. Read-only. We never write to your data.',detail:'Credentials are AES-256 encrypted. Setup takes under 5 minutes.'},
+              {n:'02',title:'We learn your schema',desc:'Qwezy scans your tables, identifies relationships, and understands your business context.',detail:'You add plain-English descriptions. Your context is fully isolated — no data is shared.'},
+              {n:'03',title:'Your team asks questions',desc:'Anyone can type a question and get an answer. No SQL. No training. No waiting.',detail:'Analysts can see and edit the generated SQL. Everyone else just gets results.'},
+              {n:'04',title:'Build dashboards and automate reports',desc:'Save queries as reports, schedule them, and build dashboards your team actually checks.',detail:'Connect live to PowerBI and Tableau. Email results to any distribution list.'},
+            ].map((s,i,arr)=>(
+              <div key={s.n} style={{display:'grid',gridTemplateColumns:'72px 1fr',gap:24,padding:'28px 0',borderBottom:i<arr.length-1?'1px solid #E5E7EB':'none',alignItems:'start'}}>
+                <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:28,fontWeight:800,color:'#D1FAE5',lineHeight:1}}>{s.n}</div>
                 <div>
-                  <div style={{fontSize:13.5,fontWeight:600,color:C.text}}>{t.name}</div>
-                  <div style={{fontSize:12.5,color:C.textLight,marginTop:2}}>{t.role} - {t.co}</div>
+                  <div style={{fontSize:17,fontWeight:700,color:'#0F1923',marginBottom:5,letterSpacing:'-0.2px'}}>{s.title}</div>
+                  <div style={{fontSize:14.5,color:'#4B5563',lineHeight:1.65,marginBottom:4}}>{s.desc}</div>
+                  <div style={{fontSize:13,color:'#9CA3AF'}}>{s.detail}</div>
                 </div>
               </div>
             ))}
@@ -579,32 +450,33 @@ export default function Landing() {
         </div>
       </section>
 
-      <section id="security" style={{padding:'80px 40px',background:C.bg}}>
+      {/* Security */}
+      <section style={{padding:'80px 40px',background:'#022c22'}}>
         <div style={{maxWidth:820,margin:'0 auto',display:'grid',gridTemplateColumns:'1fr 1fr',gap:48,alignItems:'center'}}>
           <div>
-            <h2 style={{fontSize:32,fontWeight:800,color:C.text,letterSpacing:'-0.6px',marginBottom:12}}>Security first</h2>
-            <p style={{fontSize:15,color:C.textMuted,lineHeight:1.7,marginBottom:24}}>Qwezy issues read-only queries only. It cannot write, update, or delete your data. Every company's AI context is fully isolated. Your data never trains our models.</p>
-            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {['Read-only database access - never writes','AES-256 encrypted credentials','Per-company isolated AI context','No data used to train any model','GDPR compliant data handling'].map(item=>(
+            <h2 style={{fontSize:32,fontWeight:800,color:'#fff',letterSpacing:'-0.6px',marginBottom:12}}>Your data stays yours.</h2>
+            <p style={{fontSize:15,color:'#6EE7B7',lineHeight:1.75,marginBottom:24}}>Qwezy issues read-only queries only. It cannot write, update, or delete anything. Every company's context is fully isolated — your data never trains our models.</p>
+            <div style={{display:'flex',flexDirection:'column',gap:9}}>
+              {['Read-only access — Qwezy never writes to your DB','AES-256 encrypted credentials','Per-company isolated AI context','Your data never trains any model','GDPR compliant'].map(item=>(
                 <div key={item} style={{display:'flex',alignItems:'center',gap:9}}>
-                  <span style={{color:C.accent,fontWeight:700,fontSize:14,flexShrink:0}}>+</span>
-                  <span style={{fontSize:13.5,color:C.text}}>{item}</span>
+                  <span style={{color:'#34D399',fontWeight:700,fontSize:14,flexShrink:0}}>+</span>
+                  <span style={{fontSize:13.5,color:'rgba(255,255,255,0.85)'}}>{item}</span>
                 </div>
               ))}
             </div>
           </div>
-          <div style={{background:'#fff',borderRadius:12,padding:24,border:'1px solid #E5E7EB'}}>
-            <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'#484F58',marginBottom:14,textTransform:'uppercase',letterSpacing:'0.07em'}}>How isolation works</div>
+          <div style={{background:'rgba(255,255,255,0.05)',borderRadius:12,padding:24,border:'1px solid rgba(255,255,255,0.08)'}}>
+            <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'#6EE7B7',marginBottom:14,textTransform:'uppercase',letterSpacing:'0.07em',opacity:0.7}}>How isolation works</div>
             {[
-              {label:'Company context',val:'Injected per query',color:C.accent},
-              {label:'Table annotations',val:'Company-specific',color:C.accent},
-              {label:'Query history',val:'Isolated per org',color:C.accent},
-              {label:'Data access',val:'Read-only only',color:C.accent},
-              {label:'Model training',val:'Never',color:'#EF4444'},
-              {label:'Credential storage',val:'AES-256',color:C.accent},
+              {label:'Company context',val:'Injected per query',color:'#34D399'},
+              {label:'Query history',val:'Isolated per org',color:'#34D399'},
+              {label:'Data access',val:'Read-only only',color:'#34D399'},
+              {label:'Model training',val:'Never',color:'#F87171'},
+              {label:'Credential storage',val:'AES-256',color:'#34D399'},
+              {label:'Cross-company data',val:'Impossible',color:'#34D399'},
             ].map(r=>(
-              <div key={r.label} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid #F3F4F6'}}>
-                <span style={{fontSize:13,color:C.textMuted}}>{r.label}</span>
+              <div key={r.label} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid rgba(255,255,255,0.06)'}}>
+                <span style={{fontSize:13,color:'rgba(255,255,255,0.5)'}}>{r.label}</span>
                 <span style={{fontSize:13,fontWeight:600,color:r.color}}>{r.val}</span>
               </div>
             ))}
@@ -612,77 +484,65 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* Pricing */}
       <section id="pricing" style={{padding:'80px 40px'}}>
         <div style={{maxWidth:980,margin:'0 auto'}}>
           <div style={{textAlign:'center',marginBottom:48}}>
-            <h2 style={{fontSize:32,fontWeight:800,color:C.text,letterSpacing:'-0.3px',marginBottom:8}}>Simple, transparent pricing</h2>
-            <p style={{fontSize:15,color:C.textMuted}}>One-time onboarding fee to get set up - then a flat monthly subscription - add seats anytime</p>
+            <h2 style={{fontSize:32,fontWeight:800,color:'#0F1923',letterSpacing:'-0.3px',marginBottom:8}}>Simple, transparent pricing</h2>
+            <p style={{fontSize:15,color:'#4B5563'}}>One-time onboarding fee to get set up — then a flat monthly rate. Add seats anytime.</p>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24}}>
             {[
-              {name:'Starter',onboard:'$299',monthly:'$99/mo',includes:['1 database','Up to 5 tables','1 admin seat','1 analyst seat','3 viewer seats'],highlight:false,note:'Best for solo teams or a single department'},
-              {name:'Growth',onboard:'$750',monthly:'$349/mo',includes:['3 databases','Up to 20 tables','2 admin seats','5 analyst seats','10 viewer seats','Scheduled reports','Email delivery'],highlight:true,note:'Most popular for growing teams'},
-              {name:'Scale',onboard:'$1,500',monthly:'$899/mo',includes:['10 databases','Up to 75 tables','5 admin seats','15 analyst seats','Unlimited viewers','BI tool connections','Priority support'],highlight:false,note:'Multi-team or multi-product companies'},
-              {name:'Enterprise',onboard:'Custom',monthly:'Custom',includes:['Unlimited databases','Unlimited tables','Unlimited seats','SSO / SAML','Dedicated CSM','Custom SLA','Audit log'],highlight:false,note:'Large orgs with compliance needs'},
+              {name:'Starter',onboard:'$299',monthly:'$99/mo',includes:['1 database','Up to 5 tables','1 admin + 1 analyst','3 viewer seats'],highlight:false,note:'Solo teams or single departments'},
+              {name:'Growth',onboard:'$750',monthly:'$349/mo',includes:['3 databases','Up to 20 tables','2 admin + 5 analyst','10 viewer seats','Scheduled reports','Email delivery'],highlight:true,note:'Most popular for growing teams'},
+              {name:'Scale',onboard:'$1,500',monthly:'$899/mo',includes:['10 databases','Up to 75 tables','5 admin + 15 analyst','Unlimited viewers','BI tool connections','Priority support'],highlight:false,note:'Multi-team companies'},
+              {name:'Enterprise',onboard:'Custom',monthly:'Custom',includes:['Unlimited everything','SSO / SAML','Dedicated CSM','Custom SLA','Audit log'],highlight:false,note:'Large orgs with compliance needs'},
             ].map(p=>(
-              <div key={p.name} style={{background:'#fff',borderRadius:12,padding:22,border:p.highlight?`2px solid ${C.accent}`:'1px solid #E5E7EB',position:'relative',display:'flex',flexDirection:'column'}}>
-                {p.highlight && <div style={{position:'absolute',top:-12,left:'50%',transform:'translateX(-50%)',background:C.accent,color:'#fff',fontSize:11,fontWeight:700,padding:'3px 12px',borderRadius:10,whiteSpace:'nowrap'}}>Most popular</div>}
-                <div style={{fontSize:14.5,fontWeight:700,color:C.text,marginBottom:4}}>{p.name}</div>
-                <div style={{fontSize:10.5,color:C.textLight,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em'}}>Onboarding</div>
-                <div style={{fontSize:26,fontWeight:800,color:p.onboard==='Custom'?C.textMuted:C.text,letterSpacing:'-0.5px',marginBottom:2}}>{p.onboard}</div>
-                <div style={{fontSize:13,fontWeight:600,color:p.highlight?C.accent:C.textMuted,marginBottom:14}}>{p.monthly==='Custom'?'Talk to us':p.monthly}</div>
-                <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,marginBottom:18}}>
+              <div key={p.name} style={{background:'#fff',borderRadius:12,padding:22,border:p.highlight?`2px solid #059669`:'1px solid #E5E7EB',position:'relative',display:'flex',flexDirection:'column'}}>
+                {p.highlight&&<div style={{position:'absolute',top:-12,left:'50%',transform:'translateX(-50%)',background:'#059669',color:'#fff',fontSize:11,fontWeight:700,padding:'3px 12px',borderRadius:10,whiteSpace:'nowrap'}}>Most popular</div>}
+                <div style={{fontSize:14.5,fontWeight:700,color:'#0F1923',marginBottom:4}}>{p.name}</div>
+                <div style={{fontSize:10.5,color:'#9CA3AF',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.05em'}}>Onboarding</div>
+                <div style={{fontSize:24,fontWeight:800,color:p.onboard==='Custom'?'#9CA3AF':'#0F1923',letterSpacing:'-0.5px',marginBottom:2}}>{p.onboard}</div>
+                <div style={{fontSize:13,fontWeight:600,color:p.highlight?'#059669':'#6B7280',marginBottom:14}}>{p.monthly==='Custom'?'Talk to us':p.monthly}</div>
+                <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,marginBottom:16}}>
                   {p.includes.map(item=>(
-                    <div key={item} style={{display:'flex',alignItems:'center',gap:7,fontSize:12.5,color:C.textMuted}}>
-                      <span style={{color:C.accent,fontWeight:700,flexShrink:0,fontSize:11}}>+</span>{item}
+                    <div key={item} style={{display:'flex',alignItems:'center',gap:7,fontSize:12.5,color:'#4B5563'}}>
+                      <span style={{color:'#059669',fontWeight:700,flexShrink:0,fontSize:11}}>+</span>{item}
                     </div>
                   ))}
                 </div>
-                <div style={{fontSize:11.5,color:C.textLight,marginBottom:14,lineHeight:1.4,fontStyle:'italic'}}>{p.note}</div>
+                <div style={{fontSize:11.5,color:'#9CA3AF',marginBottom:14,lineHeight:1.4,fontStyle:'italic'}}>{p.note}</div>
                 <button onClick={()=>setShowForm(true)}
-                  style={{width:'100%',background:p.highlight?C.accent:'#fff',color:p.highlight?'#fff':C.text,border:p.highlight?'none':'1.5px solid #E5E7EB',borderRadius:7,padding:'9px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',marginTop:'auto'}}>
+                  style={{width:'100%',background:p.highlight?'#059669':'#fff',color:p.highlight?'#fff':'#0F1923',border:p.highlight?'none':'1.5px solid #E5E7EB',borderRadius:7,padding:'9px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',marginTop:'auto'}}>
                   {p.onboard==='Custom'?'Contact us':'Request access'}
                 </button>
               </div>
             ))}
           </div>
-          <div style={{background:'#F9FAFB',borderRadius:10,border:'1px solid #E5E7EB',padding:'18px 24px',display:'flex',gap:32,alignItems:'center',flexWrap:'wrap'}}>
-            <div>
-              <div style={{fontSize:13.5,fontWeight:600,color:C.text,marginBottom:3}}>Need more seats?</div>
-              <div style={{fontSize:13,color:C.textMuted}}>Add seats to any plan at any time.</div>
-            </div>
-            {[['Admin','$40/mo per seat'],['Analyst','$25/mo per seat'],['Viewer','$8/mo per seat']].map(([role,price])=>(
-              <div key={role} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 16px',background:'#fff',borderRadius:8,border:'1px solid #E5E7EB'}}>
-                <div>
-                  <div style={{fontSize:12.5,fontWeight:600,color:C.text}}>{role}</div>
-                  <div style={{fontSize:12,color:C.accent,fontWeight:600}}>{price}</div>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       </section>
 
-      <section style={{padding:'80px 40px',background:C.navBg}}>
+      {/* CTA */}
+      <section style={{padding:'80px 40px',background:'#022c22'}}>
         <div style={{maxWidth:580,margin:'0 auto',textAlign:'center'}}>
           <h2 style={{fontSize:36,fontWeight:800,color:'#fff',letterSpacing:'-0.8px',marginBottom:12}}>Start querying in 30 minutes</h2>
-          <p style={{fontSize:16,color:'#6EE7B7',lineHeight:1.65,marginBottom:32}}>We onboard every new customer personally - setup, annotation, and first queries included in the onboarding fee.</p>
-          <button onClick={()=>setShowForm(true)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:9,padding:'14px 30px',fontSize:16,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',boxShadow:'0 4px 20px rgba(16,185,129,0.4)'}}>
-            Request early access
+          <p style={{fontSize:16,color:'#6EE7B7',lineHeight:1.65,marginBottom:32}}>We onboard every new customer personally — setup, annotation, and first queries included in the onboarding fee.</p>
+          <button onClick={()=>setShowForm(true)} style={{background:'#059669',color:'#fff',border:'none',borderRadius:9,padding:'14px 30px',fontSize:16,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',boxShadow:'0 4px 20px rgba(16,185,129,0.4)'}}>
+            Request access →
           </button>
         </div>
       </section>
 
-      <footer style={{padding:'28px 40px',borderTop:'1px solid #F3F4F6',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12}}>
+      <footer style={{padding:'24px 40px',borderTop:'1px solid #F3F4F6',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12}}>
         <div style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer'}} onClick={()=>router.push('/auth')}>
           <div style={{width:22,height:22,background:'linear-gradient(135deg,#10B981,#059669)',borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center'}}>
             <span style={{color:'#fff',fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:9}}>{'{ }'}</span>
           </div>
-          <span style={{fontWeight:700,fontSize:14,color:C.text}}>Qwezy</span>
+          <span style={{fontWeight:700,fontSize:14,color:'#0F1923'}}>Qwezy</span>
         </div>
-        <div style={{fontSize:12.5,color:C.textLight}}>2026 Qwezy Inc. reports@qwezy.io</div>
+        <div style={{fontSize:12.5,color:'#9CA3AF'}}>© 2026 Qwezy Inc. · reports@qwezy.io</div>
         <div style={{display:'flex',gap:20}}>
-          {['Privacy','Terms','Security'].map(l=><a key={l} href="#" style={{fontSize:12.5,color:C.textLight}}>{l}</a>)}
+          {['Privacy','Terms','Security'].map(l=><a key={l} href="#" style={{fontSize:12.5,color:'#9CA3AF'}}>{l}</a>)}
         </div>
       </footer>
     </div>

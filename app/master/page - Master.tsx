@@ -41,7 +41,17 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose:()=>void; onCreate
     finally{setLoading(false)}
   }
 
-
+  const F=({label,children}:{label:string;children:React.ReactNode})=>(
+    <div>
+      <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>{label}</div>
+      {children}
+    </div>
+  )
+  const inp=(val:string,set:(v:string)=>void,ph:string,type='text')=>(
+    <input value={val} onChange={e=>set(e.target.value)} placeholder={ph} type={type}
+      style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif'}}
+      onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
+  )
 
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.7)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
@@ -51,8 +61,8 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose:()=>void; onCreate
           <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,color:C.textLight,cursor:'pointer'}}>×</button>
         </div>
         <div style={{padding:'20px',display:'flex',flexDirection:'column',gap:14}}>
-          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Company name</div><input value={companyName} onChange={e=>setCompanyName(e.target.value)} placeholder="Ahmed & Rasul LLP" style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif'}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/></div>
-          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Plan</div>
+          <F label="Company name">{inp(companyName,setCompanyName,'Ahmed & Rasul LLP')}</F>
+          <F label="Plan">
             <div style={{display:'flex',gap:8}}>
               {['starter','growth','scale'].map(p=>(
                 <button key={p} onClick={()=>setPlan(p)}
@@ -62,16 +72,16 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose:()=>void; onCreate
                 </button>
               ))}
             </div>
-          </div>
+          </F>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-            <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Admin name</div><input value={adminName} onChange={e=>setAdminName(e.target.value)} placeholder="Tariq Ahmed" style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif'}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/></div>
-            <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Admin email</div><input value={adminEmail} onChange={e=>setAdminEmail(e.target.value)} placeholder="admin@firm.com" type="email" style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif'}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/></div>
+            <F label="Admin name">{inp(adminName,setAdminName,'Tariq Ahmed')}</F>
+            <F label="Admin email">{inp(adminEmail,setAdminEmail,'admin@firm.com','email')}</F>
           </div>
-          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Internal notes (optional)</div>
+          <F label="Internal notes (optional)">
             <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} placeholder="e.g. Law firm, 15 users, referred by…"
               style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',resize:'none'}}
               onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
-          </div>
+          </F>
           {/* Stripe placeholder */}
           <div style={{padding:'12px 14px',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:8,fontSize:13,color:'#92400E'}}>
             <span style={{fontWeight:600}}>💳 Payment — Coming soon</span>

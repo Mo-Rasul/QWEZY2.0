@@ -556,7 +556,7 @@ function FollowUpSuggestions({rows,fields,onAsk}:{rows:any[],fields:string[],onA
 }
 
 // ── Qwezy Chat Tab ────────────────────────────────────────────────────────────
-function QwezyTab({onAsk}:{onAsk:(q:string,conv?:Conversation)=>void}) {
+function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?:Conversation)=>void,initialInput?:string,onInputConsumed?:()=>void}) {
   const [conversations,setConversations]=useState<Conversation[]>([
     {id:'c0',title:'New conversation',messages:[],createdAt:new Date(),updatedAt:new Date()}
   ])
@@ -576,6 +576,7 @@ function QwezyTab({onAsk}:{onAsk:(q:string,conv?:Conversation)=>void}) {
     }catch{}
   },[])
   const [input,setInput]=useState('')
+  useEffect(()=>{if(initialInput){setInput(initialInput);if(onInputConsumed)onInputConsumed()}},[initialInput])
   const [directSQL,setDirectSQL]=useState('SELECT *\nFROM orders\nLIMIT 10')
   const [queryMode,setQueryMode]=useState<'nl'|'sql'>('nl')
   const [loading,setLoading]=useState(false)
@@ -1693,49 +1694,136 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:
   )
 } 
 // ── Alerts Tab ────────────────────────────────────────────────────────────────
-type AlertDef = {id:string,name:string,sql:string,severity:'warning'|'critical',description:string}
+type AlertDef = {id:string,name:string,sql:string,detailSql?:string,severity:'warning'|'critical',description:string}
 const DEFAULT_ALERTS:AlertDef[] = [
-  {id:'a1',name:'Orders without ship date',sql:`SELECT COUNT(*) AS count FROM orders WHERE shipped_date IS NULL AND order_date < NOW() - INTERVAL '7 days'`,severity:'warning',description:'Orders placed over 7 days ago that have not been shipped yet'},
-  {id:'a2',name:'Out of stock products',sql:`SELECT COUNT(*) AS count FROM products WHERE units_in_stock = 0 AND discontinued = 0`,severity:'critical',description:'Active products with zero stock'},
-  {id:'a3',name:'High value unshipped orders',sql:`SELECT COUNT(*) AS count FROM orders o JOIN order_details od ON o.order_id=od.order_id WHERE o.shipped_date IS NULL GROUP BY o.order_id HAVING SUM(od.unit_price*od.quantity)>1000`,severity:'critical',description:'Unshipped orders with total value over $1,000'},
-  {id:'a4',name:'Customers with no orders in 90 days',sql:`SELECT COUNT(*) AS count FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.customer_id AND o.order_date > NOW() - INTERVAL '90 days')`,severity:'warning',description:'Customers who have not placed an order in the last 90 days'},
+  {
+    id:'a1',name:'Orders without ship date',severity:'warning',
+    description:'Orders placed over 7 days ago that have not been shipped yet',
+    sql:`SELECT COUNT(*) AS count FROM orders WHERE shipped_date IS NULL AND order_date < NOW() - INTERVAL '7 days'`,
+    detailSql:`SELECT o.order_id, c.company_name AS customer, o.order_date, o.required_date, e.last_name AS employee, o.ship_country, o.freight FROM orders o LEFT JOIN customers c ON o.customer_id=c.customer_id LEFT JOIN employees e ON o.employee_id=e.employee_id WHERE o.shipped_date IS NULL AND o.order_date < NOW() - INTERVAL '7 days' ORDER BY o.order_date ASC LIMIT 50`,
+  },
+  {
+    id:'a2',name:'Out of stock products',severity:'critical',
+    description:'Active products with zero stock',
+    sql:`SELECT COUNT(*) AS count FROM products WHERE units_in_stock = 0 AND discontinued = 0`,
+    detailSql:`SELECT p.product_name, c.category_name, p.units_in_stock, p.units_on_order, p.reorder_level, s.company_name AS supplier FROM products p LEFT JOIN categories c ON p.category_id=c.category_id LEFT JOIN suppliers s ON p.supplier_id=s.supplier_id WHERE p.units_in_stock = 0 AND p.discontinued = 0 ORDER BY p.product_name`,
+  },
+  {
+    id:'a3',name:'High value unshipped orders',severity:'critical',
+    description:'Unshipped orders with total value over $1,000',
+    sql:`SELECT COUNT(*) AS count FROM orders o JOIN order_details od ON o.order_id=od.order_id WHERE o.shipped_date IS NULL GROUP BY o.order_id HAVING SUM(od.unit_price*od.quantity)>1000`,
+    detailSql:`SELECT o.order_id, c.company_name AS customer, o.order_date, o.required_date, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount))::numeric,2) AS order_value, o.ship_country FROM orders o JOIN order_details od ON o.order_id=od.order_id LEFT JOIN customers c ON o.customer_id=c.customer_id WHERE o.shipped_date IS NULL GROUP BY o.order_id, c.company_name, o.order_date, o.required_date, o.ship_country HAVING SUM(od.unit_price*od.quantity)>1000 ORDER BY order_value DESC LIMIT 50`,
+  },
+  {
+    id:'a4',name:'Customers with no orders in 90 days',severity:'warning',
+    description:'Customers who have not placed an order in the last 90 days',
+    sql:`SELECT COUNT(*) AS count FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.customer_id AND o.order_date > NOW() - INTERVAL '90 days')`,
+    detailSql:`SELECT c.company_name AS customer, c.contact_name, c.country, c.phone, MAX(o.order_date) AS last_order_date, COUNT(o.order_id) AS total_orders FROM customers c LEFT JOIN orders o ON c.customer_id=o.customer_id WHERE NOT EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id=c.customer_id AND o2.order_date > NOW() - INTERVAL '90 days') GROUP BY c.customer_id, c.company_name, c.contact_name, c.country, c.phone ORDER BY last_order_date ASC NULLS FIRST LIMIT 50`,
+  },
 ]
 
 function AlertCard({alert}:{alert:AlertDef}) {
   const [count,setCount]=useState<number|null>(null)
+  const [rows,setRows]=useState<any[]>([])
+  const [fields,setFields]=useState<string[]>([])
   const [loading,setLoading]=useState(true)
+  const [detailLoading,setDetailLoading]=useState(false)
+  const [expanded,setExpanded]=useState(false)
+  const [menuOpen,setMenuOpen]=useState(false)
+
+  // Count query on mount
   useEffect(()=>{
     fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:alert.sql})})
       .then(r=>r.json()).then(d=>{
-        if(!d.error&&d.rows?.[0]){
-          const v=Object.values(d.rows[0])[0]
-          setCount(Number(v)||0)
-        }
+        if(!d.error&&d.rows?.[0])setCount(Number(Object.values(d.rows[0])[0])||0)
       }).catch(()=>setCount(0)).finally(()=>setLoading(false))
   },[alert.id])
+
+  // Detail rows when expanded — uses detailSql if available, otherwise falls back to main sql
+  useEffect(()=>{
+    if(!expanded||rows.length>0)return
+    const sql=alert.detailSql||alert.sql
+    setDetailLoading(true)
+    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:sql})})
+      .then(r=>r.json()).then(d=>{if(!d.error){setRows(d.rows||[]);setFields(d.fields||[])}})
+      .catch(()=>{}).finally(()=>setDetailLoading(false))
+  },[expanded,alert.id])
+
+  useEffect(()=>{
+    const close=()=>setMenuOpen(false)
+    if(menuOpen)document.addEventListener('click',close)
+    return()=>document.removeEventListener('click',close)
+  },[menuOpen])
 
   const isFiring=count!==null&&count>0
   const color=alert.severity==='critical'?C.danger:C.warn
   const bg=alert.severity==='critical'?'#FEF2F2':'#FFFBEB'
   const border=alert.severity==='critical'?'#FECACA':'#FDE68A'
 
+  const exportCSV=()=>{
+    if(!rows.length)return
+    const csv=[fields.join(','),...rows.map(r=>fields.map(f=>String(r[f]??'')).join(','))].join('\n')
+    const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=`${alert.name}.csv`;a.click()
+  }
+
   return(
-    <div style={{background:isFiring?bg:'#fff',borderRadius:10,border:`1px solid ${isFiring?border:C.cardBorder}`,padding:'16px 18px',display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{width:40,height:40,borderRadius:10,background:isFiring?bg:'#F8FAFD',border:`1.5px solid ${isFiring?border:C.cardBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
-        {loading?'…':isFiring?alert.severity==='critical'?'🔴':'🟡':'✅'}
-      </div>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
-          <span style={{fontSize:13.5,fontWeight:600,color:isFiring?color:C.text}}>{alert.name}</span>
-          <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:isFiring?bg:'#F0F4F8',color:isFiring?color:C.textLight,border:`1px solid ${isFiring?border:C.cardBorder}`}}>{alert.severity}</span>
+    <div style={{borderRadius:10,border:`1px solid ${isFiring?border:C.cardBorder}`,overflow:'hidden',background:'#fff'}}>
+      <div onClick={()=>setExpanded(s=>!s)}
+        style={{background:isFiring?bg:'#fff',padding:'14px 18px',display:'flex',gap:14,alignItems:'center',cursor:'pointer'}}
+        onMouseOver={e=>{if(!isFiring)(e.currentTarget as HTMLElement).style.background='#FAFAFA'}}
+        onMouseOut={e=>{(e.currentTarget as HTMLElement).style.background=isFiring?bg:'#fff'}}>
+        <div style={{width:36,height:36,borderRadius:8,background:isFiring?bg:'#F8FAFD',border:`1.5px solid ${isFiring?border:C.cardBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>
+          {loading?'…':isFiring?alert.severity==='critical'?'🔴':'🟡':'✅'}
         </div>
-        <div style={{fontSize:12.5,color:C.textMuted,lineHeight:1.5,marginBottom:8}}>{alert.description}</div>
-        <div style={{display:'flex',alignItems:'center',gap:10}}>
-          {loading
-            ?<span style={{fontSize:12,color:C.textLight}}>Checking…</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+            <span style={{fontSize:13.5,fontWeight:600,color:isFiring?color:C.text}}>{alert.name}</span>
+            <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:isFiring?bg:'#F0F4F8',color:isFiring?color:C.textLight,border:`1px solid ${isFiring?border:C.cardBorder}`}}>{alert.severity}</span>
+          </div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>{alert.description}</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          {loading?<span style={{fontSize:12,color:C.textLight}}>Checking…</span>
             :<span style={{fontSize:13,fontWeight:700,color:isFiring?color:C.success}}>{isFiring?`${count} affected`:count===0?'All clear':''}</span>}
+          <div style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
+            <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
+              style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1,lineHeight:1}}
+              onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
+            {menuOpen&&(
+              <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:160,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+                <button onClick={()=>{exportCSV();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>⬇ Export CSV</button>
+                <button onClick={()=>{setExpanded(true);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>👁 View results</button>
+              </div>
+            )}
+          </div>
+          <span style={{fontSize:11,color:C.textLight,display:'inline-block',transform:expanded?'rotate(180deg)':'rotate(0deg)',transition:'transform .2s'}}>▼</span>
         </div>
       </div>
+      {expanded&&(
+        <div style={{borderTop:`1px solid ${isFiring?border:C.cardBorder}`,background:'#FAFAFA'}}>
+          {detailLoading
+            ?<div style={{padding:'14px 18px',display:'flex',alignItems:'center',gap:8,fontSize:13,color:C.textLight}}>
+              <div style={{width:12,height:12,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading results…
+            </div>
+            :rows.length===0
+              ?<div style={{padding:'14px 18px',fontSize:13,color:C.textMuted}}>No results — all clear.</div>
+              :<div style={{overflowX:'auto'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+                  <thead><tr style={{background:C.tableHead}}>
+                    {fields.map(f=><th key={f} style={{padding:'8px 14px',textAlign:'left',fontSize:11,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
+                  </tr></thead>
+                  <tbody>{rows.slice(0,50).map((r,i)=>(
+                    <tr key={i} style={{background:i%2===0?'#fff':'#F8FAFD',borderBottom:`1px solid #F1F5F9`}}>
+                      {fields.map(f=><td key={f} style={{padding:'7px 14px',color:C.text,whiteSpace:'nowrap',fontSize:13}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():r[f] instanceof Date?new Date(r[f]).toLocaleDateString():String(r[f]??'')}</td>)}
+                    </tr>
+                  ))}</tbody>
+                </table>
+                {rows.length>50&&<div style={{padding:'8px 14px',fontSize:11,color:C.textLight,borderTop:`1px solid ${C.cardBorder}`}}>Showing 50 of {rows.length} rows · Export CSV for all</div>}
+              </div>}
+        </div>
+      )}
     </div>
   )
 }
@@ -2968,6 +3056,175 @@ function InviteButton({email,role,onDone}:{email:string,role:string,onDone:()=>v
 }
 
 
+// ── Add / Onboard Database Modal ──────────────────────────────────────────────
+const DB_TYPES = [
+  {id:'postgres',label:'PostgreSQL',icon:'🐘'},
+  {id:'neon',label:'Neon',icon:'⚡'},
+  {id:'supabase',label:'Supabase',icon:'🦸'},
+  {id:'mysql',label:'MySQL',icon:'🐬'},
+  {id:'snowflake',label:'Snowflake',icon:'❄️'},
+  {id:'mssql',label:'SQL Server',icon:'🟦'},
+]
+
+function AddDatabaseModal({onClose}:{onClose:()=>void}) {
+  const [step,setStep]=useState<'connect'|'testing'|'done'>('connect')
+  const [dbType,setDbType]=useState('')
+  const [mode,setMode]=useState<'url'|'form'>('url')
+  const [urlStr,setUrlStr]=useState('')
+  const [host,setHost]=useState(''); const [port,setPort]=useState('5432')
+  const [dbName,setDbName]=useState(''); const [user,setUser]=useState(''); const [pass,setPass]=useState('')
+  const [ssl,setSsl]=useState(true)
+  const [testResult,setTestResult]=useState<{ok:boolean,error?:string,db_name?:string,table_count?:number,latency_ms?:number}|null>(null)
+  const [saving,setSaving]=useState(false)
+  const [saveError,setSaveError]=useState('')
+  const [saved,setSaved]=useState(false)
+
+  const buildConnStr=()=>{
+    if(mode==='url')return urlStr.trim()
+    if(!host||!dbName)return ''
+    const sslP=ssl?'?sslmode=require':''
+    const auth=user?`${encodeURIComponent(user)}${pass?':'+encodeURIComponent(pass):''}@`:''
+    return `postgresql://${auth}${host}:${port||5432}/${dbName}${sslP}`
+  }
+
+  const canTest=dbType&&(mode==='url'?urlStr.trim().length>10:!!(host&&dbName))
+
+  const test=async()=>{
+    setStep('testing');setTestResult(null);setSaveError('')
+    try{
+      const res=await fetch('/api/test-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({connectionString:buildConnStr(),ssl})})
+      const d=await res.json()
+      setTestResult(d)
+    }catch{setTestResult({ok:false,error:'Network error — try again'})}
+    setStep('connect')
+  }
+
+  const save=async()=>{
+    setSaving(true);setSaveError('')
+    try{
+      const res=await fetch('/api/company',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({db_connection_string:buildConnStr()})})
+      const d=await res.json()
+      if(!res.ok)throw new Error(d.error||'Failed to save')
+      setSaved(true)
+      setTimeout(()=>onClose(),1800)
+    }catch(e:any){setSaveError(e.message)}
+    setSaving(false)
+  }
+
+  const inp=(val:string,set:(v:string)=>void,ph:string,type='text')=>(
+    <input value={val} onChange={e=>set(e.target.value)} placeholder={ph} type={type}
+      style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:"'JetBrains Mono',monospace",background:'#fff'}}
+      onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
+  )
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.72)',zIndex:600,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'#fff',borderRadius:12,width:'100%',maxWidth:560,boxShadow:'0 24px 64px rgba(0,0,0,0.22)',overflow:'hidden',fontFamily:'Inter,sans-serif'}}>
+
+        {/* Header */}
+        <div style={{padding:'16px 20px',borderBottom:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15,color:C.text}}>Connect a database</div>
+            <div style={{fontSize:12.5,color:C.textMuted,marginTop:2}}>Read-only access only — Qwezy never writes to your data</div>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button onClick={onClose} style={{fontSize:12.5,color:C.textLight,background:'none',border:`1px solid ${C.cardBorder}`,borderRadius:6,padding:'5px 12px',cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save & finish later</button>
+            <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,color:C.textLight,cursor:'pointer',lineHeight:1}}>×</button>
+          </div>
+        </div>
+
+        <div style={{padding:'20px',display:'flex',flexDirection:'column',gap:16}}>
+
+          {/* DB type selector */}
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>Database type</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6}}>
+              {DB_TYPES.map(d=>(
+                <button key={d.id} onClick={()=>setDbType(d.id)}
+                  style={{padding:'9px 8px',borderRadius:8,border:'1.5px solid',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,fontWeight:500,display:'flex',alignItems:'center',gap:7,
+                    borderColor:dbType===d.id?C.accent:C.cardBorder,background:dbType===d.id?C.accentBg:'#fff',color:dbType===d.id?C.accentDark:C.textMuted}}>
+                  <span style={{fontSize:17}}>{d.icon}</span>{d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {dbType&&<>
+            {/* Mode toggle */}
+            <div style={{display:'flex',gap:4,padding:'3px',background:'#F0F4F8',borderRadius:7,width:'fit-content'}}>
+              {(['url','form'] as const).map(m=>(
+                <button key={m} onClick={()=>setMode(m)}
+                  style={{padding:'5px 14px',borderRadius:5,border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12.5,fontWeight:500,
+                    background:mode===m?'#fff':undefined,color:mode===m?C.text:C.textLight,boxShadow:mode===m?'0 1px 3px rgba(0,0,0,0.1)':undefined}}>
+                  {m==='url'?'Connection URL':'Connection form'}
+                </button>
+              ))}
+            </div>
+
+            {mode==='url'
+              ?<div>
+                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Connection URL</div>
+                {inp(urlStr,setUrlStr,'postgresql://user:password@host/database?sslmode=require')}
+                <div style={{fontSize:11.5,color:C.textLight,marginTop:4}}>Format: postgresql://user:pass@host:port/dbname</div>
+              </div>
+              :<div style={{display:'flex',flexDirection:'column',gap:10}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 80px',gap:10}}>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Host</div>{inp(host,setHost,'db.example.com')}</div>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Port</div>{inp(port,setPort,'5432')}</div>
+                </div>
+                <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Database name</div>{inp(dbName,setDbName,'production')}</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Username</div>{inp(user,setUser,'readonly_user')}</div>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Password</div>{inp(pass,setPass,'••••••••','password')}</div>
+                </div>
+              </div>}
+
+            {/* SSL toggle */}
+            <div style={{display:'flex',alignItems:'center',gap:9,padding:'9px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
+              <button onClick={()=>setSsl(s=>!s)} style={{width:34,height:18,borderRadius:9,border:'none',cursor:'pointer',background:ssl?C.accent:'#CBD5E1',position:'relative',flexShrink:0,transition:'background .2s'}}>
+                <div style={{width:12,height:12,borderRadius:'50%',background:'#fff',position:'absolute',top:3,left:ssl?19:3,transition:'left .2s'}}/>
+              </button>
+              <span style={{fontSize:13,color:C.text}}>Require SSL / TLS</span>
+            </div>
+
+            {/* Test result */}
+            {testResult&&(
+              <div style={{padding:'11px 14px',borderRadius:8,border:`1px solid ${testResult.ok?C.greenBorder:'#FECACA'}`,background:testResult.ok?C.accentBg:'#FEF2F2',fontSize:13}}>
+                {testResult.ok
+                  ?<span style={{color:C.accent,fontWeight:600}}>✓ Connected — {testResult.table_count} tables found ({testResult.latency_ms}ms) · {testResult.db_name}</span>
+                  :<span style={{color:C.danger,fontWeight:500}}>✗ {testResult.error}</span>}
+              </div>
+            )}
+
+            {saveError&&<div style={{padding:'10px 12px',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:7,fontSize:13,color:C.danger}}>{saveError}</div>}
+            {saved&&<div style={{padding:'10px 12px',background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:7,fontSize:13,color:C.accent,fontWeight:600}}>✓ Database saved — reloading your workspace…</div>}
+          </>}
+
+          <div style={{padding:'9px 12px',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:7,fontSize:12.5,color:'#92400E'}}>
+            We recommend a dedicated read-only database user. Credentials are AES-256 encrypted.
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{padding:'14px 20px',borderTop:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',gap:8,justifyContent:'flex-end',alignItems:'center'}}>
+          <button onClick={onClose} style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 16px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+            Exit without saving
+          </button>
+          <button onClick={test} disabled={!canTest||step==='testing'||saved}
+            style={{background:'#F0F4F8',color:C.text,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 16px',fontSize:13,fontWeight:500,cursor:canTest?'pointer':'default',fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:6}}>
+            {step==='testing'?<><div style={{width:11,height:11,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .7s linear infinite'}}/>Testing…</>:'Test connection'}
+          </button>
+          <button onClick={save} disabled={!testResult?.ok||saving||saved}
+            style={{background:testResult?.ok&&!saving&&!saved?C.accent:'#E5E7EB',color:testResult?.ok&&!saving&&!saved?'#fff':C.textLight,border:'none',borderRadius:7,padding:'8px 20px',fontSize:13,fontWeight:600,cursor:testResult?.ok?'pointer':'default',fontFamily:'Inter,sans-serif'}}>
+            {saving?'Saving…':saved?'Saved ✓':'Save & connect'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
   const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
   const USERS=[
@@ -2983,6 +3240,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
   const [inviteEmail,setInviteEmail]=useState('')
   const [inviteRole,setInviteRole]=useState('Viewer')
   const [showInvite,setShowInvite]=useState(false)
+  const [showAddDB,setShowAddDB]=useState(false)
 
   const usedPct=Math.round((PLAN_LIMITS.used/PLAN_LIMITS.queries)*100)
 
@@ -3123,7 +3381,11 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
 
         {/* Database */}
         <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
-          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Database connection</div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Database connection</div>
+            <button onClick={()=>setShowAddDB(true)}
+              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add database</button>
+          </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
             {[['Database','Northwind Demo'],['Host','demo.supabase.co'],['Status','Connected'],['Tables','8 tables'],['Last synced','Just now'],['Plan','Demo — read only']].map(([k,v])=>(
               <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
@@ -3132,6 +3394,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
               </div>
             ))}
           </div>
+          {showAddDB&&<AddDatabaseModal onClose={()=>setShowAddDB(false)}/>}
         </div>
 
         {/* Health */}
@@ -3197,12 +3460,12 @@ export default function Dashboard() {
   const [tab,setTab]=useState<string>('ask')
   const [showTour,setShowTour]=useState(false)
 
-  // Check if user needs onboarding (company exists but no DB connected)
+  // Check if user needs onboarding or has no DB
   useEffect(()=>{
     const check=async()=>{
       try{
         const res=await fetch('/api/company/status')
-        if(res.ok){const d=await res.json();if(d.needs_onboarding)router.push('/onboarding')}
+        if(res.ok){const d=await res.json();if(d.needs_onboarding)setShowConnectPrompt(true)}
       }catch{}
     }
     check()
@@ -3213,8 +3476,7 @@ export default function Dashboard() {
     try{
       const savedTab=sessionStorage.getItem('qwezy_tab')
       if(savedTab)setTab(savedTab)
-      const tourDone=sessionStorage.getItem('qwezy_tour_done')
-      if(tourDone!=='1')setShowTour(true)
+      try{const tourDone=localStorage.getItem('qwezy_tour_done_v2');if(tourDone!=='1')setShowTour(true)}catch{}
     }catch{}
   },[])
   const [drawerTable,setDrawerTable]=useState<any>(null)
@@ -3226,6 +3488,7 @@ export default function Dashboard() {
   const [askQ,setAskQ]=useState('')
   const [gridTable,setGridTable]=useState<any>(null)
   const [showAdmin,setShowAdmin]=useState(false)
+  const [showConnectPrompt,setShowConnectPrompt]=useState(false)
   const [infoPanel,setInfoPanel]=useState<{table:any,x:number,y:number}|null>(null)
   const [dataAccess,setDataAccess]=useState(true)
   const dragSide=useRef(false)
@@ -3288,7 +3551,7 @@ export default function Dashboard() {
         </div>
         <div style={{display:'flex',gap:1,flex:1,overflow:'hidden'}}>
           {TABS.map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)}
+            <button key={t.id} onClick={()=>{setTab(t.id);setGridTable(null)}}
               style={{background:'none',border:'none',padding:'0 12px',height:48,fontSize:12.5,fontWeight:500,color:tab===t.id?'#fff':C.navText,cursor:'pointer',borderBottom:tab===t.id?`2px solid ${C.navActive}`:'2px solid transparent',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>
               {t.label}
             </button>
@@ -3388,13 +3651,13 @@ export default function Dashboard() {
         <main style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           {gridTable&&<TableGridView table={gridTable} onClose={()=>setGridTable(null)} dataAccess={dataAccess}/>}
           {!gridTable&&<>
-          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}}/>}
+          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>}
           {tab==='builder'&&<BuilderTab/>}
           {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
           {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})}/>}
           {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult}/></div>}
           {tab==='admin'&&(
-            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{sessionStorage.removeItem('qwezy_tour_done')}catch{}}}/>
+            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}}/>
           )}
 
           </>}
@@ -3406,7 +3669,31 @@ export default function Dashboard() {
       {drawerTable&&<TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
       {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}} onGrid={t=>{setGridTable(t);setContextMenu(null)}}/>}
-      {showTour&&<TourOverlay onFinish={()=>{setShowTour(false);try{sessionStorage.setItem('qwezy_tour_done','1')}catch{}}} onTabSwitch={t=>setTab(t)}/>}
+
+      {showConnectPrompt&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.6)',zIndex:800,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+          <div style={{background:'#fff',borderRadius:12,width:'100%',maxWidth:480,boxShadow:'0 24px 64px rgba(0,0,0,0.2)',overflow:'hidden',fontFamily:'Inter,sans-serif'}}>
+            <div style={{padding:'24px 24px 20px',textAlign:'center'}}>
+              <div style={{fontSize:36,marginBottom:12}}>🔌</div>
+              <div style={{fontSize:18,fontWeight:800,color:C.text,letterSpacing:'-0.3px',marginBottom:8}}>Connect your database</div>
+              <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:24}}>
+                Your workspace is ready but you haven't connected a database yet. Connect now to start querying your real data in plain English.
+              </div>
+              <div style={{display:'flex',gap:10,justifyContent:'center'}}>
+                <button onClick={()=>setShowConnectPrompt(false)}
+                  style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'10px 20px',fontSize:13.5,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+                  Not now
+                </button>
+                <button onClick={()=>{setShowConnectPrompt(false);window.location.href='/onboarding'}}
+                  style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+                  Connect database →
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {showTour&&<TourOverlay onFinish={()=>{setShowTour(false);setTab('ask');try{localStorage.setItem('qwezy_tour_done_v2','1')}catch{}}} onTabSwitch={t=>setTab(t)}/>}
     </div>
   )
 }

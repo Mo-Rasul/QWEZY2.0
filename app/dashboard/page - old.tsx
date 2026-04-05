@@ -283,6 +283,158 @@ function PreviewModal({table,onClose}:{table:any,onClose:()=>void}) {
 }
 
 // ── Context Menu ──────────────────────────────────────────────────────────────
+
+// ── Table Info Panel (Snowflake-style) ────────────────────────────────────────
+// Shown on hover in sidebar, right-click in sidebar/explorer/schema
+const TABLE_META: Record<string,{size:string,updated:string,owner:string,contact:string}> = {
+  orders:       {size:'6.2 MB',  updated:'Today',        owner:'Sales Ops',    contact:'ops@company.com'},
+  order_details:{size:'14.8 MB', updated:'Today',        owner:'Finance',      contact:'finance@company.com'},
+  customers:    {size:'0.4 MB',  updated:'Weekly',       owner:'CRM Team',     contact:'crm@company.com'},
+  employees:    {size:'0.1 MB',  updated:'Monthly',      owner:'HR',           contact:'hr@company.com'},
+  products:     {size:'0.8 MB',  updated:'Daily',        owner:'Inventory',    contact:'inventory@company.com'},
+  categories:   {size:'0.05 MB', updated:'As needed',    owner:'Product Team', contact:'product@company.com'},
+  suppliers:    {size:'0.2 MB',  updated:'Monthly',      owner:'Procurement',  contact:'procurement@company.com'},
+  shippers:     {size:'0.02 MB', updated:'As needed',    owner:'Logistics',    contact:'logistics@company.com'},
+}
+
+function TableInfoPanel({table,x,y,onClose,onAsk,onPreview,onGrid,onDrawer,showActions=true}:{
+  table:any, x:number, y:number, onClose:()=>void,
+  onAsk:(q:string)=>void, onPreview:(t:any)=>void, onGrid:(t:any)=>void, onDrawer:(t:any)=>void,
+  showActions?:boolean
+}) {
+  const [activeTab,setActiveTab]=useState<'details'|'definition'|'columns'>('details')
+  const meta=TABLE_META[table.name]||{size:'—',updated:'—',owner:'—',contact:'—'}
+
+  // Position panel — keep it on screen
+  const panelW=280, panelH=340
+  const left=Math.min(x, window.innerWidth-panelW-12)
+  const top=Math.min(y, window.innerHeight-panelH-12)
+
+  useEffect(()=>{
+    const close=(e:MouseEvent)=>{
+      const el=document.getElementById('table-info-panel')
+      if(el&&!el.contains(e.target as Node))onClose()
+    }
+    // Small delay so the triggering click doesn't immediately close
+    const t=setTimeout(()=>document.addEventListener('mousedown',close),100)
+    return()=>{clearTimeout(t);document.removeEventListener('mousedown',close)}
+  },[])
+
+  return(
+    <div id="table-info-panel" style={{
+      position:'fixed',left,top,width:panelW,
+      background:'#fff',borderRadius:9,border:`1px solid ${C.cardBorder}`,
+      boxShadow:'0 8px 28px rgba(0,0,0,0.14)',zIndex:600,overflow:'hidden',
+      fontFamily:'Inter,sans-serif',
+    }} onClick={e=>e.stopPropagation()}>
+
+      {/* Header */}
+      <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,background:C.tableHead,display:'flex',alignItems:'center',gap:7}}>
+        <div style={{width:8,height:8,borderRadius:'50%',background:table.color,flexShrink:0}}/>
+        <span style={{fontSize:12,fontWeight:700,color:C.text,fontFamily:"'JetBrains Mono'",flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{table.name}</span>
+        <button onClick={onClose} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,lineHeight:1,padding:0}}>×</button>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:'flex',borderBottom:`1px solid ${C.cardBorder}`,background:'#FAFAFA'}}>
+        {(['details','definition','columns'] as const).map(t=>(
+          <button key={t} onClick={()=>setActiveTab(t)}
+            style={{flex:1,padding:'7px 0',fontSize:11.5,fontWeight:activeTab===t?600:400,
+              color:activeTab===t?C.accent:C.textLight,background:'none',border:'none',
+              borderBottom:`2px solid ${activeTab===t?C.accent:'transparent'}`,cursor:'pointer',
+              textTransform:'capitalize',fontFamily:'Inter,sans-serif'}}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div style={{padding:'10px 12px',maxHeight:220,overflowY:'auto'}}>
+
+        {activeTab==='details'&&(
+          <div style={{display:'flex',flexDirection:'column',gap:0}}>
+            {/* Data preview button */}
+            <button onClick={()=>{onPreview(table);onClose()}}
+              style={{width:'100%',padding:'6px 10px',marginBottom:8,borderRadius:5,border:`1px solid ${C.cardBorder}`,
+                background:'#F8FAFD',color:C.text,fontSize:12,cursor:'pointer',fontFamily:'Inter,sans-serif',
+                display:'flex',alignItems:'center',gap:6,fontWeight:500}}
+              onMouseOver={e=>{e.currentTarget.style.background=C.accentBg;e.currentTarget.style.borderColor=C.accent}}
+              onMouseOut={e=>{e.currentTarget.style.background='#F8FAFD';e.currentTarget.style.borderColor=C.cardBorder}}>
+              <span style={{fontSize:13}}>⊞</span> Data preview
+            </button>
+            {[
+              ['Number of rows', table.rows],
+              ['Size',           meta.size],
+              ['Last updated',   meta.updated],
+              ['Owner',          meta.owner],
+              ['Point of contact', meta.contact],
+              ['Teams',          table.teams?.join(', ')||'—'],
+            ].map(([k,v])=>(
+              <div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',padding:'4px 0',borderBottom:`1px solid #F8FAFD`}}>
+                <span style={{fontSize:11.5,color:C.textLight,flexShrink:0,marginRight:8}}>{k}</span>
+                <span style={{fontSize:11.5,fontWeight:500,color:C.text,textAlign:'right',wordBreak:'break-all'}}>{v}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activeTab==='definition'&&(
+          <div>
+            <p style={{fontSize:12.5,color:C.text,lineHeight:1.65,margin:0}}>{table.desc||'No description available.'}</p>
+            {table.sampleQ?.length>0&&(
+              <div style={{marginTop:10}}>
+                <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Sample questions</div>
+                {table.sampleQ.map((q:string)=>(
+                  <div key={q} onClick={()=>{onAsk(q);onClose()}}
+                    style={{fontSize:12,color:C.accent,padding:'3px 0',cursor:'pointer',lineHeight:1.5}}
+                    onMouseOver={e=>(e.currentTarget as HTMLElement).style.textDecoration='underline'}
+                    onMouseOut={e=>(e.currentTarget as HTMLElement).style.textDecoration='none'}>
+                    → {q}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab==='columns'&&(
+          <div style={{display:'flex',flexDirection:'column',gap:3}}>
+            {table.columns?.map((col:any)=>(
+              <div key={col.n} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 6px',borderRadius:4,background:'#F8FAFD'}}>
+                <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,background:TC[col.t]||'#8A9BB0'}}/>
+                <span style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{col.n}</span>
+                <span style={{fontSize:10,color:C.textLight,flexShrink:0,fontFamily:"'JetBrains Mono'"}}>{col.t}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Action buttons — divider + quick actions */}
+      {showActions&&(
+        <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'6px 8px',display:'flex',flexDirection:'column',gap:1,background:'#FAFAFA'}}>
+          {[
+            ['🗂 Open as spreadsheet', ()=>{onGrid(table);onClose()}],
+            ['💬 Ask a question',      ()=>{onAsk(`Tell me about the ${table.name} table`);onClose()}],
+            ['ℹ️ Table details',        ()=>{onDrawer(table);onClose()}],
+            ['📋 Copy table name',     ()=>{navigator.clipboard?.writeText(table.name);onClose()}],
+          ].map(([label,fn]:any)=>(
+            <button key={label} onClick={fn}
+              style={{display:'flex',alignItems:'center',width:'100%',padding:'6px 8px',background:'none',
+                border:'none',fontSize:12,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',
+                textAlign:'left',borderRadius:4}}
+              onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'}
+              onMouseOut={e=>e.currentTarget.style.background='none'}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:number,y:number,table:any,onClose:()=>void,onAsk:(q:string)=>void,onPreview:(t:any)=>void,onDrawer:(t:any)=>void,onGrid:(t:any)=>void}) {
   useEffect(()=>{const h=()=>onClose();window.addEventListener('click',h);return()=>window.removeEventListener('click',h)},[])
   return(
@@ -302,7 +454,7 @@ function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:numb
 }
 
 // ── Relationships Diagram ─────────────────────────────────────────────────────
-function RelationshipsDiagram({onTableClick}:{onTableClick:(t:any)=>void}) {
+function RelationshipsDiagram({onTableClick,onTableContext}:{onTableClick:(t:any)=>void,onTableContext?:(t:any,x:number,y:number)=>void}) {
   const [hov,setHov]=useState<string|null>(null)
   const [hovEdge,setHovEdge]=useState<string|null>(null)
   const [tooltip,setTooltip]=useState<{x:number,y:number,label:string}|null>(null)
@@ -328,7 +480,8 @@ function RelationshipsDiagram({onTableClick}:{onTableClick:(t:any)=>void}) {
             </g>)
           })}
           {TABLES.map(t=>{const isH=hov===t.name;return(
-            <g key={t.name} style={{cursor:'pointer'}} onMouseEnter={()=>setHov(t.name)} onMouseLeave={()=>setHov(null)} onClick={()=>onTableClick(t)}>
+            <g key={t.name} style={{cursor:'pointer'}} onMouseEnter={()=>setHov(t.name)} onMouseLeave={()=>setHov(null)} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
+
               <rect x={t.x} y={t.y} width={125} height={44} rx={6} fill={isH?t.color:'#fff'} stroke={isH?t.color:C.cardBorder} strokeWidth={isH?1.5:1}/>
               <text x={t.x+62} y={t.y+17} textAnchor="middle" style={{fontSize:11.5,fontFamily:"'JetBrains Mono'",fontWeight:600,fill:isH?'#fff':C.text}}>{t.name}</text>
               <text x={t.x+62} y={t.y+32} textAnchor="middle" style={{fontSize:9.5,fontFamily:'Inter,sans-serif',fill:isH?'rgba(255,255,255,0.75)':C.textLight}}>{t.rows} rows</text>
@@ -336,7 +489,7 @@ function RelationshipsDiagram({onTableClick}:{onTableClick:(t:any)=>void}) {
           )})}
         </svg>
         <div style={{display:'flex',gap:12,flexWrap:'wrap',borderTop:`1px solid ${C.cardBorder}`,paddingTop:12,marginTop:8}}>
-          {TABLES.map(t=><div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>onTableClick(t)}>
+          {TABLES.map(t=><div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
             <div style={{width:7,height:7,borderRadius:'50%',background:t.color}}/><span style={{fontSize:11.5,color:C.textMuted,fontFamily:"'JetBrains Mono'"}}>{t.name}</span>
           </div>)}
         </div>
@@ -403,7 +556,7 @@ function FollowUpSuggestions({rows,fields,onAsk}:{rows:any[],fields:string[],onA
 }
 
 // ── Qwezy Chat Tab ────────────────────────────────────────────────────────────
-function QwezyTab({onAsk}:{onAsk:(q:string,conv?:Conversation)=>void}) {
+function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?:Conversation)=>void,initialInput?:string,onInputConsumed?:()=>void}) {
   const [conversations,setConversations]=useState<Conversation[]>([
     {id:'c0',title:'New conversation',messages:[],createdAt:new Date(),updatedAt:new Date()}
   ])
@@ -423,6 +576,7 @@ function QwezyTab({onAsk}:{onAsk:(q:string,conv?:Conversation)=>void}) {
     }catch{}
   },[])
   const [input,setInput]=useState('')
+  useEffect(()=>{if(initialInput){setInput(initialInput);if(onInputConsumed)onInputConsumed()}},[initialInput])
   const [directSQL,setDirectSQL]=useState('SELECT *\nFROM orders\nLIMIT 10')
   const [queryMode,setQueryMode]=useState<'nl'|'sql'>('nl')
   const [loading,setLoading]=useState(false)
@@ -1474,7 +1628,7 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
     }
 
 // ── Explorer Tab ──────────────────────────────────────────────────────────────
-function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void}) {
+function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void,onInfoPanel:(t:any,x:number,y:number)=>void}) {
   const [explorerView,setExplorerView]=useState<'tables'|'schema'>('tables')
   const [search,setSearch]=useState('')
   const filtered=search?TABLES.filter(t=>t.name.includes(search.toLowerCase())||t.columns.some(c=>c.n.includes(search.toLowerCase()))):TABLES
@@ -1489,7 +1643,7 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>
           </button>
         ))}
       </div>
-      {explorerView==='schema'&&<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram onTableClick={t=>setDrawerTable(t)}/></div>}
+      {explorerView==='schema'&&<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram onTableClick={t=>setDrawerTable(t)} onTableContext={(t,x,y)=>onInfoPanel(t,x,y)}/></div>}
       {explorerView==='tables'&&<div style={{padding:'20px 24px',overflowY:'auto',flex:1}}>
       <div style={{display:'flex',gap:12,marginBottom:18,flexWrap:'wrap',alignItems:'flex-end'}}>
         <div>
@@ -1512,7 +1666,7 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>
         {filtered.map(tbl=>(
           <div key={tbl.name}
             style={{background:'#fff',borderRadius:9,border:`1px solid ${C.cardBorder}`,cursor:'pointer',overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}
-            onClick={()=>setDrawerTable(tbl)} onContextMenu={e=>handleRightClick(e,tbl)}>
+            onClick={()=>setDrawerTable(tbl)} onContextMenu={e=>{e.preventDefault();onInfoPanel(tbl,e.clientX,e.clientY)}}>
             <div style={{padding:'11px 14px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:9,background:C.tableHead}}>
               <div style={{width:9,height:9,borderRadius:'50%',background:tbl.color,flexShrink:0}}/>
               <span style={{fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:13.5,color:C.text,flex:1}}>{tbl.name}</span>
@@ -1539,6 +1693,207 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick}:{onAsk:(q:string)=>
     </div>
   )
 } 
+// ── Alerts Tab ────────────────────────────────────────────────────────────────
+type AlertDef = {id:string,name:string,sql:string,detailSql?:string,severity:'warning'|'critical',description:string}
+const DEFAULT_ALERTS:AlertDef[] = [
+  {
+    id:'a1',name:'Orders without ship date',severity:'warning',
+    description:'Orders placed over 7 days ago that have not been shipped yet',
+    sql:`SELECT COUNT(*) AS count FROM orders WHERE shipped_date IS NULL AND order_date < NOW() - INTERVAL '7 days'`,
+    detailSql:`SELECT o.order_id, c.company_name AS customer, o.order_date, o.required_date, e.last_name AS employee, o.ship_country, o.freight FROM orders o LEFT JOIN customers c ON o.customer_id=c.customer_id LEFT JOIN employees e ON o.employee_id=e.employee_id WHERE o.shipped_date IS NULL AND o.order_date < NOW() - INTERVAL '7 days' ORDER BY o.order_date ASC LIMIT 50`,
+  },
+  {
+    id:'a2',name:'Out of stock products',severity:'critical',
+    description:'Active products with zero stock',
+    sql:`SELECT COUNT(*) AS count FROM products WHERE units_in_stock = 0 AND discontinued = 0`,
+    detailSql:`SELECT p.product_name, c.category_name, p.units_in_stock, p.units_on_order, p.reorder_level, s.company_name AS supplier FROM products p LEFT JOIN categories c ON p.category_id=c.category_id LEFT JOIN suppliers s ON p.supplier_id=s.supplier_id WHERE p.units_in_stock = 0 AND p.discontinued = 0 ORDER BY p.product_name`,
+  },
+  {
+    id:'a3',name:'High value unshipped orders',severity:'critical',
+    description:'Unshipped orders with total value over $1,000',
+    sql:`SELECT COUNT(*) AS count FROM orders o JOIN order_details od ON o.order_id=od.order_id WHERE o.shipped_date IS NULL GROUP BY o.order_id HAVING SUM(od.unit_price*od.quantity)>1000`,
+    detailSql:`SELECT o.order_id, c.company_name AS customer, o.order_date, o.required_date, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount))::numeric,2) AS order_value, o.ship_country FROM orders o JOIN order_details od ON o.order_id=od.order_id LEFT JOIN customers c ON o.customer_id=c.customer_id WHERE o.shipped_date IS NULL GROUP BY o.order_id, c.company_name, o.order_date, o.required_date, o.ship_country HAVING SUM(od.unit_price*od.quantity)>1000 ORDER BY order_value DESC LIMIT 50`,
+  },
+  {
+    id:'a4',name:'Customers with no orders in 90 days',severity:'warning',
+    description:'Customers who have not placed an order in the last 90 days',
+    sql:`SELECT COUNT(*) AS count FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.customer_id AND o.order_date > NOW() - INTERVAL '90 days')`,
+    detailSql:`SELECT c.company_name AS customer, c.contact_name, c.country, c.phone, MAX(o.order_date) AS last_order_date, COUNT(o.order_id) AS total_orders FROM customers c LEFT JOIN orders o ON c.customer_id=o.customer_id WHERE NOT EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id=c.customer_id AND o2.order_date > NOW() - INTERVAL '90 days') GROUP BY c.customer_id, c.company_name, c.contact_name, c.country, c.phone ORDER BY last_order_date ASC NULLS FIRST LIMIT 50`,
+  },
+]
+
+function AlertCard({alert}:{alert:AlertDef}) {
+  const [count,setCount]=useState<number|null>(null)
+  const [rows,setRows]=useState<any[]>([])
+  const [fields,setFields]=useState<string[]>([])
+  const [loading,setLoading]=useState(true)
+  const [detailLoading,setDetailLoading]=useState(false)
+  const [expanded,setExpanded]=useState(false)
+  const [menuOpen,setMenuOpen]=useState(false)
+
+  // Count query on mount
+  useEffect(()=>{
+    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:alert.sql})})
+      .then(r=>r.json()).then(d=>{
+        if(!d.error&&d.rows?.[0])setCount(Number(Object.values(d.rows[0])[0])||0)
+      }).catch(()=>setCount(0)).finally(()=>setLoading(false))
+  },[alert.id])
+
+  // Detail rows when expanded — uses detailSql if available, otherwise falls back to main sql
+  useEffect(()=>{
+    if(!expanded||rows.length>0)return
+    const sql=alert.detailSql||alert.sql
+    setDetailLoading(true)
+    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:sql})})
+      .then(r=>r.json()).then(d=>{if(!d.error){setRows(d.rows||[]);setFields(d.fields||[])}})
+      .catch(()=>{}).finally(()=>setDetailLoading(false))
+  },[expanded,alert.id])
+
+  useEffect(()=>{
+    const close=()=>setMenuOpen(false)
+    if(menuOpen)document.addEventListener('click',close)
+    return()=>document.removeEventListener('click',close)
+  },[menuOpen])
+
+  const isFiring=count!==null&&count>0
+  const color=alert.severity==='critical'?C.danger:C.warn
+  const bg=alert.severity==='critical'?'#FEF2F2':'#FFFBEB'
+  const border=alert.severity==='critical'?'#FECACA':'#FDE68A'
+
+  const exportCSV=()=>{
+    if(!rows.length)return
+    const csv=[fields.join(','),...rows.map(r=>fields.map(f=>String(r[f]??'')).join(','))].join('\n')
+    const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=`${alert.name}.csv`;a.click()
+  }
+
+  return(
+    <div style={{borderRadius:10,border:`1px solid ${isFiring?border:C.cardBorder}`,overflow:'hidden',background:'#fff'}}>
+      <div onClick={()=>setExpanded(s=>!s)}
+        style={{background:isFiring?bg:'#fff',padding:'14px 18px',display:'flex',gap:14,alignItems:'center',cursor:'pointer'}}
+        onMouseOver={e=>{if(!isFiring)(e.currentTarget as HTMLElement).style.background='#FAFAFA'}}
+        onMouseOut={e=>{(e.currentTarget as HTMLElement).style.background=isFiring?bg:'#fff'}}>
+        <div style={{width:36,height:36,borderRadius:8,background:isFiring?bg:'#F8FAFD',border:`1.5px solid ${isFiring?border:C.cardBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>
+          {loading?'…':isFiring?alert.severity==='critical'?'🔴':'🟡':'✅'}
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+            <span style={{fontSize:13.5,fontWeight:600,color:isFiring?color:C.text}}>{alert.name}</span>
+            <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:isFiring?bg:'#F0F4F8',color:isFiring?color:C.textLight,border:`1px solid ${isFiring?border:C.cardBorder}`}}>{alert.severity}</span>
+          </div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>{alert.description}</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          {loading?<span style={{fontSize:12,color:C.textLight}}>Checking…</span>
+            :<span style={{fontSize:13,fontWeight:700,color:isFiring?color:C.success}}>{isFiring?`${count} affected`:count===0?'All clear':''}</span>}
+          <div style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
+            <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
+              style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1,lineHeight:1}}
+              onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
+            {menuOpen&&(
+              <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:160,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+                <button onClick={()=>{exportCSV();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>⬇ Export CSV</button>
+                <button onClick={()=>{setExpanded(true);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>👁 View results</button>
+              </div>
+            )}
+          </div>
+          <span style={{fontSize:11,color:C.textLight,display:'inline-block',transform:expanded?'rotate(180deg)':'rotate(0deg)',transition:'transform .2s'}}>▼</span>
+        </div>
+      </div>
+      {expanded&&(
+        <div style={{borderTop:`1px solid ${isFiring?border:C.cardBorder}`,background:'#FAFAFA'}}>
+          {detailLoading
+            ?<div style={{padding:'14px 18px',display:'flex',alignItems:'center',gap:8,fontSize:13,color:C.textLight}}>
+              <div style={{width:12,height:12,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading results…
+            </div>
+            :rows.length===0
+              ?<div style={{padding:'14px 18px',fontSize:13,color:C.textMuted}}>No results — all clear.</div>
+              :<div style={{overflowX:'auto'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+                  <thead><tr style={{background:C.tableHead}}>
+                    {fields.map(f=><th key={f} style={{padding:'8px 14px',textAlign:'left',fontSize:11,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
+                  </tr></thead>
+                  <tbody>{rows.slice(0,50).map((r,i)=>(
+                    <tr key={i} style={{background:i%2===0?'#fff':'#F8FAFD',borderBottom:`1px solid #F1F5F9`}}>
+                      {fields.map(f=><td key={f} style={{padding:'7px 14px',color:C.text,whiteSpace:'nowrap',fontSize:13}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():r[f] instanceof Date?new Date(r[f]).toLocaleDateString():String(r[f]??'')}</td>)}
+                    </tr>
+                  ))}</tbody>
+                </table>
+                {rows.length>50&&<div style={{padding:'8px 14px',fontSize:11,color:C.textLight,borderTop:`1px solid ${C.cardBorder}`}}>Showing 50 of {rows.length} rows · Export CSV for all</div>}
+              </div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AlertsTab() {
+  const [alerts,setAlerts]=useState<AlertDef[]>(DEFAULT_ALERTS)
+  const [showAdd,setShowAdd]=useState(false)
+  const [newAlert,setNewAlert]=useState({name:'',description:'',sql:'',severity:'warning' as 'warning'|'critical'})
+
+  const addAlert=()=>{
+    if(!newAlert.name||!newAlert.sql)return
+    setAlerts(p=>[...p,{...newAlert,id:`a${Date.now()}`}])
+    setNewAlert({name:'',description:'',sql:'',severity:'warning'})
+    setShowAdd(false)
+  }
+
+  return(
+    <div>
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
+        <div>
+          <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:2}}>Alerts</div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>Conditions that run against your live data. Red or yellow means something needs attention.</div>
+        </div>
+        <div style={{marginLeft:'auto'}}>
+          <button onClick={()=>setShowAdd(s=>!s)}
+            style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
+        </div>
+      </div>
+
+      {/* Add alert form */}
+      {showAdd&&(
+        <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:10,padding:'16px 18px',marginBottom:16,display:'flex',flexDirection:'column',gap:10}}>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:180}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Alert name</div>
+              <input value={newAlert.name} onChange={e=>setNewAlert(p=>({...p,name:e.target.value}))} placeholder="e.g. Low stock warning"
+                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+            </div>
+            <div style={{width:140}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Severity</div>
+              <select value={newAlert.severity} onChange={e=>setNewAlert(p=>({...p,severity:e.target.value as any}))}
+                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
+                <option value="warning">Warning</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Description</div>
+            <input value={newAlert.description} onChange={e=>setNewAlert(p=>({...p,description:e.target.value}))} placeholder="What does this alert check for?"
+              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>SQL — returns a count, alert fires when count &gt; 0</div>
+            <textarea value={newAlert.sql} onChange={e=>setNewAlert(p=>({...p,sql:e.target.value}))} rows={3} placeholder="SELECT COUNT(*) AS count FROM ..."
+              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:"'JetBrains Mono',monospace",resize:'vertical',lineHeight:1.6}}/>
+          </div>
+          <div style={{display:'flex',gap:6}}>
+            <button onClick={addAlert} style={{padding:'7px 18px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save alert</button>
+            <button onClick={()=>setShowAdd(false)} style={{padding:'7px 12px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+        {alerts.map(a=><AlertCard key={a.id} alert={a}/>)}
+      </div>
+    </div>
+  )
+}
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 const PRESET_QUERIES = [
@@ -2032,173 +2387,6 @@ function PresetCard({preset,onEdit,fullWidth=false}:{preset:any,onEdit:()=>void,
 }
 
 
-// ── Alerts Tab ────────────────────────────────────────────────────────────────
-type AlertDef = {id:string,name:string,sql:string,severity:'warning'|'critical',description:string}
-const DEFAULT_ALERTS:AlertDef[] = [
-  {id:'a1',name:'Orders without ship date',sql:`SELECT COUNT(*) AS count FROM orders WHERE shipped_date IS NULL AND order_date < NOW() - INTERVAL '7 days'`,severity:'warning',description:'Orders placed over 7 days ago that have not been shipped yet'},
-  {id:'a2',name:'Out of stock products',sql:`SELECT COUNT(*) AS count FROM products WHERE units_in_stock = 0 AND discontinued = 0`,severity:'critical',description:'Active products with zero stock'},
-  {id:'a3',name:'High value unshipped orders',sql:`SELECT COUNT(*) AS count FROM orders o JOIN order_details od ON o.order_id=od.order_id WHERE o.shipped_date IS NULL GROUP BY o.order_id HAVING SUM(od.unit_price*od.quantity)>1000`,severity:'critical',description:'Unshipped orders with total value over $1,000'},
-  {id:'a4',name:'Customers with no orders in 90 days',sql:`SELECT COUNT(*) AS count FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.customer_id AND o.order_date > NOW() - INTERVAL '90 days')`,severity:'warning',description:'Customers who have not placed an order in the last 90 days'},
-]
-
-function AlertCard({alert}:{alert:AlertDef}) {
-  const [count,setCount]=useState<number|null>(null)
-  const [rows,setRows]=useState<any[]>([])
-  const [fields,setFields]=useState<string[]>([])
-  const [loading,setLoading]=useState(true)
-  const [expanded,setExpanded]=useState(false)
-  const [menuOpen,setMenuOpen]=useState(false)
-
-  useEffect(()=>{
-    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:alert.sql})})
-      .then(r=>r.json()).then(d=>{
-        if(!d.error){
-          setRows(d.rows||[]);setFields(d.fields||[])
-          if(d.rows?.[0])setCount(Number(Object.values(d.rows[0])[0])||0)
-        }
-      }).catch(()=>setCount(0)).finally(()=>setLoading(false))
-  },[alert.id])
-
-  useEffect(()=>{
-    const close=()=>setMenuOpen(false)
-    if(menuOpen)document.addEventListener('click',close)
-    return()=>document.removeEventListener('click',close)
-  },[menuOpen])
-
-  const isFiring=count!==null&&count>0
-  const color=alert.severity==='critical'?C.danger:C.warn
-  const bg=alert.severity==='critical'?'#FEF2F2':'#FFFBEB'
-  const border=alert.severity==='critical'?'#FECACA':'#FDE68A'
-
-  const exportCSV=()=>{
-    if(!rows.length)return
-    const csv=[fields.join(','),...rows.map(r=>fields.map(f=>String(r[f]??'')).join(','))].join('\n')
-    const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=`${alert.name}.csv`;a.click()
-  }
-
-  return(
-    <div style={{borderRadius:10,border:`1px solid ${isFiring?border:C.cardBorder}`,overflow:'hidden',background:'#fff'}}>
-      <div onClick={()=>setExpanded(s=>!s)}
-        style={{background:isFiring?bg:'#fff',padding:'14px 18px',display:'flex',gap:14,alignItems:'center',cursor:'pointer'}}
-        onMouseOver={e=>{if(!isFiring)(e.currentTarget as HTMLElement).style.background='#FAFAFA'}}
-        onMouseOut={e=>{(e.currentTarget as HTMLElement).style.background=isFiring?bg:'#fff'}}>
-        <div style={{width:36,height:36,borderRadius:8,background:isFiring?bg:'#F8FAFD',border:`1.5px solid ${isFiring?border:C.cardBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>
-          {loading?'…':isFiring?alert.severity==='critical'?'🔴':'🟡':'✅'}
-        </div>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
-            <span style={{fontSize:13.5,fontWeight:600,color:isFiring?color:C.text}}>{alert.name}</span>
-            <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:isFiring?bg:'#F0F4F8',color:isFiring?color:C.textLight,border:`1px solid ${isFiring?border:C.cardBorder}`}}>{alert.severity}</span>
-          </div>
-          <div style={{fontSize:12.5,color:C.textMuted}}>{alert.description}</div>
-        </div>
-        <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
-          {loading?<span style={{fontSize:12,color:C.textLight}}>Checking…</span>
-            :<span style={{fontSize:13,fontWeight:700,color:isFiring?color:C.success}}>{isFiring?`${count} affected`:count===0?'All clear':''}</span>}
-          <div style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
-            <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
-              style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1,lineHeight:1}}
-              onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
-            {menuOpen&&(
-              <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:160,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
-                <button onClick={()=>{exportCSV();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>⬇ Export CSV</button>
-                <button onClick={()=>{setExpanded(true);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>👁 View results</button>
-              </div>
-            )}
-          </div>
-          <span style={{fontSize:11,color:C.textLight,display:'inline-block',transform:expanded?'rotate(180deg)':'rotate(0deg)',transition:'transform .2s'}}>▼</span>
-        </div>
-      </div>
-      {expanded&&(
-        <div style={{borderTop:`1px solid ${isFiring?border:C.cardBorder}`,background:'#FAFAFA'}}>
-          {rows.length===0
-            ?<div style={{padding:'14px 18px',fontSize:13,color:C.textMuted}}>No results — all clear.</div>
-            :<div style={{overflowX:'auto'}}>
-              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
-                <thead><tr style={{background:C.tableHead}}>
-                  {fields.map(f=><th key={f} style={{padding:'7px 12px',textAlign:'left',fontSize:10.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
-                </tr></thead>
-                <tbody>{rows.slice(0,20).map((r,i)=>(
-                  <tr key={i} style={{background:i%2===0?'#fff':'#F8FAFD',borderBottom:`1px solid #F1F5F9`}}>
-                    {fields.map(f=><td key={f} style={{padding:'6px 12px',color:C.text,whiteSpace:'nowrap'}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():String(r[f]??'')}</td>)}
-                  </tr>
-                ))}</tbody>
-              </table>
-              {rows.length>20&&<div style={{padding:'7px 12px',fontSize:11,color:C.textLight,borderTop:`1px solid ${C.cardBorder}`}}>Showing 20 of {rows.length} rows</div>}
-            </div>}
-        </div>
-      )}
-    </div>
-  )
-}
-function AlertsTab() {
-  const [alerts,setAlerts]=useState<AlertDef[]>(DEFAULT_ALERTS)
-  const [showAdd,setShowAdd]=useState(false)
-  const [newAlert,setNewAlert]=useState({name:'',description:'',sql:'',severity:'warning' as 'warning'|'critical'})
-
-  const addAlert=()=>{
-    if(!newAlert.name||!newAlert.sql)return
-    setAlerts(p=>[...p,{...newAlert,id:`a${Date.now()}`}])
-    setNewAlert({name:'',description:'',sql:'',severity:'warning'})
-    setShowAdd(false)
-  }
-
-  return(
-    <div>
-      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
-        <div>
-          <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:2}}>Alerts</div>
-          <div style={{fontSize:12.5,color:C.textMuted}}>Conditions that run against your live data. Red or yellow means something needs attention.</div>
-        </div>
-        <div style={{marginLeft:'auto'}}>
-          <button onClick={()=>setShowAdd(s=>!s)}
-            style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
-        </div>
-      </div>
-
-      {/* Add alert form */}
-      {showAdd&&(
-        <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:10,padding:'16px 18px',marginBottom:16,display:'flex',flexDirection:'column',gap:10}}>
-          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-            <div style={{flex:1,minWidth:180}}>
-              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Alert name</div>
-              <input value={newAlert.name} onChange={e=>setNewAlert(p=>({...p,name:e.target.value}))} placeholder="e.g. Low stock warning"
-                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
-            </div>
-            <div style={{width:140}}>
-              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Severity</div>
-              <select value={newAlert.severity} onChange={e=>setNewAlert(p=>({...p,severity:e.target.value as any}))}
-                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
-                <option value="warning">Warning</option>
-                <option value="critical">Critical</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Description</div>
-            <input value={newAlert.description} onChange={e=>setNewAlert(p=>({...p,description:e.target.value}))} placeholder="What does this alert check for?"
-              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
-          </div>
-          <div>
-            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>SQL — returns a count, alert fires when count &gt; 0</div>
-            <textarea value={newAlert.sql} onChange={e=>setNewAlert(p=>({...p,sql:e.target.value}))} rows={3} placeholder="SELECT COUNT(*) AS count FROM ..."
-              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:"'JetBrains Mono',monospace",resize:'vertical',lineHeight:1.6}}/>
-          </div>
-          <div style={{display:'flex',gap:6}}>
-            <button onClick={addAlert} style={{padding:'7px 18px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save alert</button>
-            <button onClick={()=>setShowAdd(false)} style={{padding:'7px 12px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      <div style={{display:'flex',flexDirection:'column',gap:10}}>
-        {alerts.map(a=><AlertCard key={a.id} alert={a}/>)}
-      </div>
-    </div>
-  )
-}
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void}) {
@@ -2838,6 +3026,36 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
 
 
 // ── Admin Page ────────────────────────────────────────────────────────────────
+function InviteButton({email,role,onDone}:{email:string,role:string,onDone:()=>void}) {
+  const [loading,setLoading]=useState(false)
+  const [status,setStatus]=useState<'idle'|'ok'|'error'>('idle')
+  const [msg,setMsg]=useState('')
+
+  const send=async()=>{
+    if(!email.trim()||!email.includes('@')){setMsg('Enter a valid email');setStatus('error');return}
+    setLoading(true);setStatus('idle')
+    try{
+      const res=await fetch('/api/invite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,name:email.split('@')[0],role:role.toLowerCase()})})
+      const d=await res.json()
+      if(!res.ok)throw new Error(d.error)
+      setStatus('ok');setMsg('Invite sent!')
+      setTimeout(()=>{setStatus('idle');setMsg('');onDone()},1500)
+    }catch(e:any){setStatus('error');setMsg(e.message||'Failed to send invite')}
+    finally{setLoading(false)}
+  }
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:4}}>
+      <button onClick={send} disabled={loading||status==='ok'}
+        style={{padding:'7px 16px',borderRadius:6,border:'none',background:status==='ok'?C.success:loading?'#E5E7EB':C.accent,color:loading?C.textLight:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',minWidth:96}}>
+        {loading?'Sending…':status==='ok'?'✓ Sent':'Send invite'}
+      </button>
+      {msg&&<div style={{fontSize:11.5,color:status==='error'?C.danger:C.success,fontWeight:500}}>{msg}</div>}
+    </div>
+  )
+}
+
+
 function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
   const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
   const USERS=[
@@ -2940,8 +3158,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
                   {['Viewer','Editor','Admin'].map(r=><option key={r}>{r}</option>)}
                 </select>
               </div>
-              <button onClick={()=>{setShowInvite(false);setInviteEmail('')}}
-                style={{padding:'7px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Send invite</button>
+              <InviteButton email={inviteEmail} role={inviteRole} onDone={()=>{setShowInvite(false);setInviteEmail('')}}/>
             </div>
           )}
           <table style={{width:'100%',borderCollapse:'collapse'}}>
@@ -3068,13 +3285,23 @@ export default function Dashboard() {
   const [tab,setTab]=useState<string>('ask')
   const [showTour,setShowTour]=useState(false)
 
+  // Check if user needs onboarding or has no DB
+  useEffect(()=>{
+    const check=async()=>{
+      try{
+        const res=await fetch('/api/company/status')
+        if(res.ok){const d=await res.json();if(d.needs_onboarding)setShowConnectPrompt(true)}
+      }catch{}
+    }
+    check()
+  },[])
+
   // Sync tab + tour from sessionStorage after mount (avoids SSR hydration mismatch)
   useEffect(()=>{
     try{
       const savedTab=sessionStorage.getItem('qwezy_tab')
       if(savedTab)setTab(savedTab)
-      const tourDone=sessionStorage.getItem('qwezy_tour_done')
-      if(tourDone!=='1')setShowTour(true)
+      try{const tourDone=localStorage.getItem('qwezy_tour_done_v2');if(tourDone!=='1')setShowTour(true)}catch{}
     }catch{}
   },[])
   const [drawerTable,setDrawerTable]=useState<any>(null)
@@ -3086,6 +3313,8 @@ export default function Dashboard() {
   const [askQ,setAskQ]=useState('')
   const [gridTable,setGridTable]=useState<any>(null)
   const [showAdmin,setShowAdmin]=useState(false)
+  const [showConnectPrompt,setShowConnectPrompt]=useState(false)
+  const [infoPanel,setInfoPanel]=useState<{table:any,x:number,y:number}|null>(null)
   const [dataAccess,setDataAccess]=useState(true)
   const dragSide=useRef(false)
 
@@ -3147,7 +3376,7 @@ export default function Dashboard() {
         </div>
         <div style={{display:'flex',gap:1,flex:1,overflow:'hidden'}}>
           {TABS.map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)}
+            <button key={t.id} onClick={()=>{setTab(t.id);setGridTable(null)}}
               style={{background:'none',border:'none',padding:'0 12px',height:48,fontSize:12.5,fontWeight:500,color:tab===t.id?'#fff':C.navText,cursor:'pointer',borderBottom:tab===t.id?`2px solid ${C.navActive}`:'2px solid transparent',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>
               {t.label}
             </button>
@@ -3162,27 +3391,68 @@ export default function Dashboard() {
       <div style={{flex:1,display:'flex',overflow:'hidden',position:'relative'}}>
 
         {/* Sidebar */}
-        <aside style={{width:sideCollapsed?24:sideWidth,minWidth:sideCollapsed?24:undefined,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:'width .15s',position:'relative'}}>
+        <aside style={{width:sideCollapsed?0:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:sideCollapsed?'width .15s':'none',position:'relative'}}>
           {!sideCollapsed&&(
             <>
+
               <div style={{padding:'9px 9px 6px',borderBottom:`1px solid ${C.sidebarBorder}`,background:'#FAFCFE',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                 <span style={{fontSize:9.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Tables</span>
                 <button onClick={()=>setSideCollapsed(true)} style={{background:'none',border:'none',fontSize:14,color:C.textLight,cursor:'pointer',lineHeight:1}}>‹</button>
               </div>
+
               <div style={{flex:1,overflowY:'auto',padding:'5px 7px'}}>
-                {TABLES.map(tbl=>(
-                  <div key={tbl.name}
-                    style={{display:'flex',alignItems:'center',gap:6,padding:'6px 7px',borderRadius:5,marginBottom:2,cursor:'pointer'}}
-                    onClick={()=>setDrawerTable(tbl)} onContextMenu={e=>handleRightClick(e,tbl)} onDoubleClick={()=>setGridTable(tbl)}
-                    onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='transparent'}>
-                    <div style={{width:7,height:7,borderRadius:'50%',background:tbl.color,flexShrink:0}}/>
+                {TABLES.map(tbl => (
+                  <div
+                    key={tbl.name}
+                    style={{
+                      display:'flex',
+                      alignItems:'center',
+                      gap:6,
+                      padding:'6px 7px',
+                      borderRadius:5,
+                      marginBottom:2,
+                      cursor:'pointer'
+                    }}
+                    onClick={() => setDrawerTable(tbl)}
+                    onDoubleClick={() => setGridTable(tbl)}
+                    onContextMenu={e=>{e.preventDefault();setInfoPanel({table:tbl,x:e.clientX,y:e.clientY})}}
+                    onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'}
+                    onMouseOut={e=>e.currentTarget.style.background='transparent'}
+                  >
+                    <div
+                      style={{
+                        width:7,
+                        height:7,
+                        borderRadius:'50%',
+                        background:tbl.color,
+                        flexShrink:0
+                      }}
+                    />
+              
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:11.5,fontWeight:500,color:C.text,fontFamily:"'JetBrains Mono'",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tbl.name}</div>
-                      <div style={{fontSize:9.5,color:C.textLight}}>{tbl.rows} rows</div>
+                      <div
+                        style={{
+                          fontSize:11.5,
+                          fontWeight:500,
+                          color:C.text,
+                          fontFamily:"'JetBrains Mono'",
+                          overflow:'hidden',
+                          textOverflow:'ellipsis',
+                          whiteSpace:'nowrap'
+                        }}
+                      >
+                        {tbl.name}
+                      </div>
+                      
+                      <div style={{fontSize:9.5,color:C.textLight}}>
+                        {tbl.rows} rows
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
+
+              
               <div style={{padding:'9px 11px',borderTop:`1px solid ${C.sidebarBorder}`,background:'#FAFCFE'}}>
                 {[['Tables','8/8'],['Database','Northwind'],['Status','Connected']].map(([k,v])=>(
                   <div key={k} style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
@@ -3198,11 +3468,7 @@ export default function Dashboard() {
             </>
           )}
           {sideCollapsed&&(
-            <div style={{display:'flex',flexDirection:'column',alignItems:'center',paddingTop:12,gap:8}}>
-              <button onClick={()=>setSideCollapsed(false)}
-                style={{width:22,height:22,background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:5,color:C.accent,cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700}}
-                title="Show tables">›</button>
-            </div>
+            <button onClick={()=>setSideCollapsed(false)} style={{width:'100%',height:48,background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,borderBottom:`1px solid ${C.sidebarBorder}`}}>›</button>
           )}
         </aside>
 
@@ -3210,13 +3476,13 @@ export default function Dashboard() {
         <main style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           {gridTable&&<TableGridView table={gridTable} onClose={()=>setGridTable(null)} dataAccess={dataAccess}/>}
           {!gridTable&&<>
-          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}}/>}
+          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>}
           {tab==='builder'&&<BuilderTab/>}
           {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
-          {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick}/>}
+          {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})}/>}
           {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult}/></div>}
           {tab==='admin'&&(
-            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{sessionStorage.removeItem('qwezy_tour_done')}catch{}}}/>
+            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}}/>
           )}
 
           </>}
@@ -3224,10 +3490,35 @@ export default function Dashboard() {
       </div>
 
       {/* Overlays */}
+      {infoPanel&&<TableInfoPanel table={infoPanel.table} x={infoPanel.x} y={infoPanel.y} onClose={()=>setInfoPanel(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setInfoPanel(null)}} onGrid={t=>{setGridTable(t);setInfoPanel(null)}} onDrawer={t=>{setDrawerTable(t);setInfoPanel(null)}}/> }
       {drawerTable&&<TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
       {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}} onGrid={t=>{setGridTable(t);setContextMenu(null)}}/>}
-      {showTour&&<TourOverlay onFinish={()=>{setShowTour(false);try{sessionStorage.setItem('qwezy_tour_done','1')}catch{}}} onTabSwitch={t=>setTab(t)}/>}
+
+      {showConnectPrompt&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.6)',zIndex:800,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+          <div style={{background:'#fff',borderRadius:12,width:'100%',maxWidth:480,boxShadow:'0 24px 64px rgba(0,0,0,0.2)',overflow:'hidden',fontFamily:'Inter,sans-serif'}}>
+            <div style={{padding:'24px 24px 20px',textAlign:'center'}}>
+              <div style={{fontSize:36,marginBottom:12}}>🔌</div>
+              <div style={{fontSize:18,fontWeight:800,color:C.text,letterSpacing:'-0.3px',marginBottom:8}}>Connect your database</div>
+              <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:24}}>
+                Your workspace is ready but you haven't connected a database yet. Connect now to start querying your real data in plain English.
+              </div>
+              <div style={{display:'flex',gap:10,justifyContent:'center'}}>
+                <button onClick={()=>setShowConnectPrompt(false)}
+                  style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'10px 20px',fontSize:13.5,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+                  Not now
+                </button>
+                <button onClick={()=>{setShowConnectPrompt(false);window.location.href='/onboarding'}}
+                  style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+                  Connect database →
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {showTour&&<TourOverlay onFinish={()=>{setShowTour(false);setTab('ask');try{localStorage.setItem('qwezy_tour_done_v2','1')}catch{}}} onTabSwitch={t=>setTab(t)}/>}
     </div>
   )
 }
