@@ -3056,6 +3056,175 @@ function InviteButton({email,role,onDone}:{email:string,role:string,onDone:()=>v
 }
 
 
+// ── Add / Onboard Database Modal ──────────────────────────────────────────────
+const DB_TYPES = [
+  {id:'postgres',label:'PostgreSQL',icon:'🐘'},
+  {id:'neon',label:'Neon',icon:'⚡'},
+  {id:'supabase',label:'Supabase',icon:'🦸'},
+  {id:'mysql',label:'MySQL',icon:'🐬'},
+  {id:'snowflake',label:'Snowflake',icon:'❄️'},
+  {id:'mssql',label:'SQL Server',icon:'🟦'},
+]
+
+function AddDatabaseModal({onClose}:{onClose:()=>void}) {
+  const [step,setStep]=useState<'connect'|'testing'|'done'>('connect')
+  const [dbType,setDbType]=useState('')
+  const [mode,setMode]=useState<'url'|'form'>('url')
+  const [urlStr,setUrlStr]=useState('')
+  const [host,setHost]=useState(''); const [port,setPort]=useState('5432')
+  const [dbName,setDbName]=useState(''); const [user,setUser]=useState(''); const [pass,setPass]=useState('')
+  const [ssl,setSsl]=useState(true)
+  const [testResult,setTestResult]=useState<{ok:boolean,error?:string,db_name?:string,table_count?:number,latency_ms?:number}|null>(null)
+  const [saving,setSaving]=useState(false)
+  const [saveError,setSaveError]=useState('')
+  const [saved,setSaved]=useState(false)
+
+  const buildConnStr=()=>{
+    if(mode==='url')return urlStr.trim()
+    if(!host||!dbName)return ''
+    const sslP=ssl?'?sslmode=require':''
+    const auth=user?`${encodeURIComponent(user)}${pass?':'+encodeURIComponent(pass):''}@`:''
+    return `postgresql://${auth}${host}:${port||5432}/${dbName}${sslP}`
+  }
+
+  const canTest=dbType&&(mode==='url'?urlStr.trim().length>10:!!(host&&dbName))
+
+  const test=async()=>{
+    setStep('testing');setTestResult(null);setSaveError('')
+    try{
+      const res=await fetch('/api/test-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({connectionString:buildConnStr(),ssl})})
+      const d=await res.json()
+      setTestResult(d)
+    }catch{setTestResult({ok:false,error:'Network error — try again'})}
+    setStep('connect')
+  }
+
+  const save=async()=>{
+    setSaving(true);setSaveError('')
+    try{
+      const res=await fetch('/api/company',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({db_connection_string:buildConnStr()})})
+      const d=await res.json()
+      if(!res.ok)throw new Error(d.error||'Failed to save')
+      setSaved(true)
+      setTimeout(()=>onClose(),1800)
+    }catch(e:any){setSaveError(e.message)}
+    setSaving(false)
+  }
+
+  const inp=(val:string,set:(v:string)=>void,ph:string,type='text')=>(
+    <input value={val} onChange={e=>set(e.target.value)} placeholder={ph} type={type}
+      style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:"'JetBrains Mono',monospace",background:'#fff'}}
+      onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
+  )
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.72)',zIndex:600,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'#fff',borderRadius:12,width:'100%',maxWidth:560,boxShadow:'0 24px 64px rgba(0,0,0,0.22)',overflow:'hidden',fontFamily:'Inter,sans-serif'}}>
+
+        {/* Header */}
+        <div style={{padding:'16px 20px',borderBottom:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15,color:C.text}}>Connect a database</div>
+            <div style={{fontSize:12.5,color:C.textMuted,marginTop:2}}>Read-only access only — Qwezy never writes to your data</div>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button onClick={onClose} style={{fontSize:12.5,color:C.textLight,background:'none',border:`1px solid ${C.cardBorder}`,borderRadius:6,padding:'5px 12px',cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save & finish later</button>
+            <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,color:C.textLight,cursor:'pointer',lineHeight:1}}>×</button>
+          </div>
+        </div>
+
+        <div style={{padding:'20px',display:'flex',flexDirection:'column',gap:16}}>
+
+          {/* DB type selector */}
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>Database type</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6}}>
+              {DB_TYPES.map(d=>(
+                <button key={d.id} onClick={()=>setDbType(d.id)}
+                  style={{padding:'9px 8px',borderRadius:8,border:'1.5px solid',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,fontWeight:500,display:'flex',alignItems:'center',gap:7,
+                    borderColor:dbType===d.id?C.accent:C.cardBorder,background:dbType===d.id?C.accentBg:'#fff',color:dbType===d.id?C.accentDark:C.textMuted}}>
+                  <span style={{fontSize:17}}>{d.icon}</span>{d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {dbType&&<>
+            {/* Mode toggle */}
+            <div style={{display:'flex',gap:4,padding:'3px',background:'#F0F4F8',borderRadius:7,width:'fit-content'}}>
+              {(['url','form'] as const).map(m=>(
+                <button key={m} onClick={()=>setMode(m)}
+                  style={{padding:'5px 14px',borderRadius:5,border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12.5,fontWeight:500,
+                    background:mode===m?'#fff':undefined,color:mode===m?C.text:C.textLight,boxShadow:mode===m?'0 1px 3px rgba(0,0,0,0.1)':undefined}}>
+                  {m==='url'?'Connection URL':'Connection form'}
+                </button>
+              ))}
+            </div>
+
+            {mode==='url'
+              ?<div>
+                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Connection URL</div>
+                {inp(urlStr,setUrlStr,'postgresql://user:password@host/database?sslmode=require')}
+                <div style={{fontSize:11.5,color:C.textLight,marginTop:4}}>Format: postgresql://user:pass@host:port/dbname</div>
+              </div>
+              :<div style={{display:'flex',flexDirection:'column',gap:10}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 80px',gap:10}}>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Host</div>{inp(host,setHost,'db.example.com')}</div>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Port</div>{inp(port,setPort,'5432')}</div>
+                </div>
+                <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Database name</div>{inp(dbName,setDbName,'production')}</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Username</div>{inp(user,setUser,'readonly_user')}</div>
+                  <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Password</div>{inp(pass,setPass,'••••••••','password')}</div>
+                </div>
+              </div>}
+
+            {/* SSL toggle */}
+            <div style={{display:'flex',alignItems:'center',gap:9,padding:'9px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
+              <button onClick={()=>setSsl(s=>!s)} style={{width:34,height:18,borderRadius:9,border:'none',cursor:'pointer',background:ssl?C.accent:'#CBD5E1',position:'relative',flexShrink:0,transition:'background .2s'}}>
+                <div style={{width:12,height:12,borderRadius:'50%',background:'#fff',position:'absolute',top:3,left:ssl?19:3,transition:'left .2s'}}/>
+              </button>
+              <span style={{fontSize:13,color:C.text}}>Require SSL / TLS</span>
+            </div>
+
+            {/* Test result */}
+            {testResult&&(
+              <div style={{padding:'11px 14px',borderRadius:8,border:`1px solid ${testResult.ok?C.greenBorder:'#FECACA'}`,background:testResult.ok?C.accentBg:'#FEF2F2',fontSize:13}}>
+                {testResult.ok
+                  ?<span style={{color:C.accent,fontWeight:600}}>✓ Connected — {testResult.table_count} tables found ({testResult.latency_ms}ms) · {testResult.db_name}</span>
+                  :<span style={{color:C.danger,fontWeight:500}}>✗ {testResult.error}</span>}
+              </div>
+            )}
+
+            {saveError&&<div style={{padding:'10px 12px',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:7,fontSize:13,color:C.danger}}>{saveError}</div>}
+            {saved&&<div style={{padding:'10px 12px',background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:7,fontSize:13,color:C.accent,fontWeight:600}}>✓ Database saved — reloading your workspace…</div>}
+          </>}
+
+          <div style={{padding:'9px 12px',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:7,fontSize:12.5,color:'#92400E'}}>
+            We recommend a dedicated read-only database user. Credentials are AES-256 encrypted.
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{padding:'14px 20px',borderTop:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',gap:8,justifyContent:'flex-end',alignItems:'center'}}>
+          <button onClick={onClose} style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 16px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+            Exit without saving
+          </button>
+          <button onClick={test} disabled={!canTest||step==='testing'||saved}
+            style={{background:'#F0F4F8',color:C.text,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 16px',fontSize:13,fontWeight:500,cursor:canTest?'pointer':'default',fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:6}}>
+            {step==='testing'?<><div style={{width:11,height:11,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .7s linear infinite'}}/>Testing…</>:'Test connection'}
+          </button>
+          <button onClick={save} disabled={!testResult?.ok||saving||saved}
+            style={{background:testResult?.ok&&!saving&&!saved?C.accent:'#E5E7EB',color:testResult?.ok&&!saving&&!saved?'#fff':C.textLight,border:'none',borderRadius:7,padding:'8px 20px',fontSize:13,fontWeight:600,cursor:testResult?.ok?'pointer':'default',fontFamily:'Inter,sans-serif'}}>
+            {saving?'Saving…':saved?'Saved ✓':'Save & connect'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
   const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
   const USERS=[
@@ -3071,6 +3240,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
   const [inviteEmail,setInviteEmail]=useState('')
   const [inviteRole,setInviteRole]=useState('Viewer')
   const [showInvite,setShowInvite]=useState(false)
+  const [showAddDB,setShowAddDB]=useState(false)
 
   const usedPct=Math.round((PLAN_LIMITS.used/PLAN_LIMITS.queries)*100)
 
@@ -3211,7 +3381,11 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
 
         {/* Database */}
         <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
-          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Database connection</div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Database connection</div>
+            <button onClick={()=>setShowAddDB(true)}
+              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add database</button>
+          </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
             {[['Database','Northwind Demo'],['Host','demo.supabase.co'],['Status','Connected'],['Tables','8 tables'],['Last synced','Just now'],['Plan','Demo — read only']].map(([k,v])=>(
               <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
@@ -3220,6 +3394,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
               </div>
             ))}
           </div>
+          {showAddDB&&<AddDatabaseModal onClose={()=>setShowAddDB(false)}/>}
         </div>
 
         {/* Health */}

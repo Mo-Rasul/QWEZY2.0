@@ -50,9 +50,6 @@ export async function POST(req: NextRequest) {
     if (!profile) return NextResponse.json({ error: 'User profile not found. Contact your admin.' }, { status: 403 })
     if (profile.status === 'inactive') return NextResponse.json({ error: 'Account inactive.' }, { status: 403 })
 
-    // Update last_seen
-    try { await supabaseAdmin.from('users').update({ last_seen: new Date().toISOString() }).eq('id', data.user.id) } catch {}
-
     const res = NextResponse.json({ user: { ...profile, email: data.user.email }, token: data.session?.access_token })
     res.cookies.set('qwezy_session', data.session?.access_token || '', {
       httpOnly: true, secure: process.env.NODE_ENV === 'production',

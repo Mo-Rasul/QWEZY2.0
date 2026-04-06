@@ -565,13 +565,13 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
   // Load saved conversations after mount
   useEffect(()=>{
     try{
-      const saved=localStorage.getItem('qwezy_convs')
+      const saved=sessionStorage.getItem('qwezy_convs')
       if(saved){
         const parsed=JSON.parse(saved)
         const convs=parsed.map((c:any)=>({...c,createdAt:new Date(c.createdAt),updatedAt:new Date(c.updatedAt),messages:c.messages.map((m:any)=>({...m,timestamp:new Date(m.timestamp)}))}))
         setConversations(convs)
       }
-      const savedId=localStorage.getItem('qwezy_active_id')
+      const savedId=sessionStorage.getItem('qwezy_active_id')
       if(savedId)setActiveId(savedId)
     }catch{}
   },[])
@@ -597,8 +597,8 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
   // Persist to sessionStorage
   useEffect(()=>{
     try {
-      localStorage.setItem('qwezy_convs',JSON.stringify(conversations))
-      localStorage.setItem('qwezy_active_id',activeId)
+      sessionStorage.setItem('qwezy_convs',JSON.stringify(conversations))
+      sessionStorage.setItem('qwezy_active_id',activeId)
     } catch {}
   },[conversations,activeId])
 
@@ -1422,35 +1422,24 @@ function ReportsTab({sharedResults,onResultSaved,currentUser}:{sharedResults:Rec
   const [reportsLoading,setReportsLoading]=useState(true)
 
   // Load reports from Supabase on mount
-  // Demo users (no company_id) get INITIAL_REPORTS; real users get from DB
   useEffect(()=>{
     const load=async()=>{
       try{
         const res=await fetch('/api/reports')
         if(res.ok){
           const d=await res.json()
-          if(d.reports&&d.reports.length>0){
-            // Normalize DB column names to UI field names
-            const normalized=d.reports.map((r:any)=>({
-              ...r,
-              group: r.group_name||r.group||'General',
-              refreshHours: r.refresh_hours||r.refreshHours||168,
-              rows: r.row_count||r.rows||0,
-              lastRun: r.last_run?new Date(r.last_run).toLocaleDateString():r.lastRun||'Never',
-              shared: r.shared??false,
-            }))
-            setReports(normalized)
-          } else {
-            // No saved reports — show demo examples (Northwind)
-            setReports(INITIAL_REPORTS)
-          }
-        } else {
-          // Not authenticated or error — show demo examples
-          setReports(INITIAL_REPORTS)
+          // Normalize DB column names to UI field names
+          const normalized=(d.reports||[]).map((r:any)=>({
+            ...r,
+            group: r.group_name||r.group||'General',
+            refreshHours: r.refresh_hours||r.refreshHours||168,
+            rows: r.row_count||r.rows||0,
+            lastRun: r.last_run||r.lastRun||'Never',
+            shared: r.shared??false,
+          }))
+          setReports(normalized)
         }
-      }catch{
-        setReports(INITIAL_REPORTS)
-      }
+      }catch{}
       finally{setReportsLoading(false)}
     }
     load()
@@ -1491,7 +1480,7 @@ function ReportsTab({sharedResults,onResultSaved,currentUser}:{sharedResults:Rec
     const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`${name}.csv`;a.click()
   }
 
-  const addReport=async()=>{
+  const addReport= async ()=>{
     if(!newReport.name||!newReport.sql) return
     const id=`r${Date.now()}`
     // Save to DB
@@ -3570,8 +3559,8 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
         </div>
 
       </div>
-      {showChangePassword&&<ChangePasswordModal onClose={()=>setShowChangePassword(false)}/>}
     </div>
+    {showChangePassword&&<ChangePasswordModal onClose={()=>setShowChangePassword(false)}/>}
   )
 }
 
@@ -3779,10 +3768,7 @@ export default function Dashboard() {
         <main style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           {gridTable&&<TableGridView table={gridTable} onClose={()=>setGridTable(null)} dataAccess={dataAccess}/>}
           {!gridTable&&<>
-          {/* QwezyTab always mounted — never unmounts so conversations are never lost */}
-          <div style={{display:tab==='ask'?'flex':'none',flex:1,overflow:'hidden',flexDirection:'column'}}>
-            <QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>
-          </div>
+          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>}
           {tab==='builder'&&<BuilderTab/>}
           {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
           {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})}/>}
