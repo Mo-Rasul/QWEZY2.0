@@ -3566,14 +3566,21 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
               <div style={{fontSize:13,fontWeight:600,color:C.text}}>Replay product tour</div>
               <div style={{fontSize:12,color:C.textMuted}}>Walk through Qwezy features step by step</div>
             </div>
+          
           </button>
         </div>
 
       </div>
-      {showChangePassword&&<ChangePasswordModal onClose={()=>setShowChangePassword(false)}/>}
+
+      {showChangePassword && (
+        <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
+      )}
+
     </div>
   )
 }
+
+
 
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
