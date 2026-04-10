@@ -99,8 +99,14 @@ async function getSystemPrompt(req: NextRequest): Promise<string> {
 
     if (!company?.db_connection_string) return NORTHWIND_PROMPT
 
-    // If company has a custom tables config use it, otherwise use Ahmed & Rasul prompt
-    return company.tables_config?.system_prompt || AHMED_RASUL_PROMPT
+    // Northwind demo DB — always use Northwind prompt regardless of company
+    if (company.db_connection_string === process.env.DEMO_DATABASE_URL) return NORTHWIND_PROMPT
+
+    // Custom system prompt configured for this company
+    if (company.tables_config?.system_prompt) return company.tables_config.system_prompt
+
+    // Generic fallback for companies without a configured prompt yet
+    return `You are Qwezy, a SQL assistant. Generate valid PostgreSQL SQL for the user's question. Return ONLY a JSON object: {"sql": "SELECT ...", "confidence": "high", "assumptions": []}`
   } catch {
     return NORTHWIND_PROMPT
   }
@@ -214,27 +220,6 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await runSQL(sql, dbUrl)
-
-    // Track usage
-    try {
-      const token = req.cookies.get('qwezy_session')?.value
-      if (token) {
-        const { createClient } = await import('@supabase/supabase-js')
-        const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
-        const { data: { user } } = await sb.auth.getUser(token)
-        if (user) {
-          const { data: profile } = await supabaseAdmin.from('users').select('company_id').eq('id', user.id).single()
-          if (profile?.company_id) {
-            await supabaseAdmin.from('query_usage').insert({
-              user_id: user.id,
-              company_id: profile.company_id,
-              query_type: customSQL ? 'sql' : 'nl',
-              created_at: new Date().toISOString(),
-            })
-          }
-        }
-      }
-    } catch {}
 
     return NextResponse.json({
       sql,

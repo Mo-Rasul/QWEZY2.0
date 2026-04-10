@@ -42,3 +42,6 @@ textarea:focus, input:focus, select:focus { outline: none; }
 .suggest           { transition: all 0.12s; }
 .ctx-item:hover    { background: #ecfdf5 !important; }
 .report-row:hover  { background: #f0fdf4 !important; }
+
+/* dashboard drag cursor */
+.dash-dragging { cursor: grabbing !important; }

@@ -1,132 +1,198 @@
-// app/api/dashboards/route.ts
-// CRUD for dashboard pages and views
-
+// app/api/dashboard/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from '@/lib/supabase-app'
-import { runSQL } from '@/lib/db'
 
-async function getAuth(req: NextRequest) {
+async function getUser(req: NextRequest) {
   const token = req.cookies.get('qwezy_session')?.value
-  const companyId = req.cookies.get('qwezy_company')?.value
-  if (!token || !companyId) return null
+  if (!token) return null
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
   const { data: { user } } = await supabase.auth.getUser(token)
-  return user ? { userId: user.id, companyId } : null
+  if (!user) return null
+  const { data: profile } = await supabaseAdmin.from('users').select('id,company_id,role').eq('id', user.id).single()
+  return profile ? { ...profile } : null
 }
 
-// GET — all pages + views for company
+// Check if string is a valid UUID
+const isUUID = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+
+// GET — load dashboard from dashboard_pages + dashboard_views
 export async function GET(req: NextRequest) {
-  const auth = await getAuth(req)
-  if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const user = await getUser(req)
+  if (!user?.company_id) return NextResponse.json({ customViews: [], pages: [] })
+
+  const { data: views, error: viewsError } = await supabaseAdmin
+    .from('dashboard_views')
+    .select('*')
+    .eq('company_id', user.company_id)
+    .order('order_index', { ascending: true })
+
+  if (viewsError) console.error('Dashboard GET views error:', viewsError.message)
+  if (!views || views.length === 0) return NextResponse.json({ customViews: [], pages: [] })
+
+  const mapView = (v: any) => {
+    const cw = Number(v.card_width) || 480
+    const ch = Number(v.card_height) || 280
+    // card_width/height stores grid units (<=24/60) for new cards, pixels for old
+    const gw = cw > 0 ? cw : undefined
+    const gh = ch > 0 ? ch : undefined
+    // color column stores grid position as "gx:gy" e.g. "3:2"
+    let gx: number | undefined
+    let gy: number | undefined
+    if (v.color && /^[\d.]+:[\d.]+$/.test(v.color)) {
+      const [px, py] = v.color.split(':').map(Number)
+      gx = px
+      gy = py
+    }
+    return {
+      id: v.id,
+      name: v.name,
+      sql: v.sql_query || '',
+      viz: v.viz_type || 'bar',
+      w: 480,
+      h: 280,
+      gw,
+      gh,
+      gx,
+      gy,
+      shared: v.shared ?? true,
+      order: v.order_index || 0,
+      rows: Array.isArray(v.rows_cache) ? v.rows_cache : [],
+      fields: Array.isArray(v.fields_cache) ? v.fields_cache : [],
+    }
+  }
 
   const { data: pages } = await supabaseAdmin
     .from('dashboard_pages')
-    .select('id,name,order_index')
-    .eq('company_id', auth.companyId)
-    .order('order_index')
+    .select('*')
+    .eq('company_id', user.company_id)
+    .order('order_index', { ascending: true })
 
-  if (!pages || pages.length === 0) return NextResponse.json({ pages: [] })
+  if (!pages || pages.length === 0) {
+    return NextResponse.json({ customViews: views.map(mapView), pages: [] })
+  }
 
-  const pageIds = pages.map(p => p.id)
-  const { data: views } = await supabaseAdmin
-    .from('dashboard_views')
-    .select('id,page_id,name,sql_query,viz_type,card_width,card_height,shared,rows_cache,fields_cache,cached_at,order_index')
-    .in('page_id', pageIds)
-    .order('order_index')
+  const overviewPage = pages.find((p: any) => p.name === 'Overview')
+  const overviewViews = overviewPage
+    ? views.filter((v: any) => v.page_id === overviewPage.id).map(mapView)
+    : views.map(mapView)
 
-  const viewsByPage: Record<string,any[]> = {}
-  ;(views||[]).forEach(v => {
-    if (!viewsByPage[v.page_id]) viewsByPage[v.page_id] = []
-    viewsByPage[v.page_id].push(v)
-  })
+  const otherPages = pages
+    .filter((pg: any) => pg.name !== 'Overview')
+    .map((pg: any) => ({
+      id: pg.id,
+      name: pg.name,
+      shared: pg.shared ?? true,
+      createdBy: pg.created_by,
+      views: views.filter((v: any) => v.page_id === pg.id).map(mapView),
+    }))
 
   return NextResponse.json({
-    pages: pages.map(p => ({ ...p, views: viewsByPage[p.id]||[] }))
+    customViews: overviewViews,
+    pages: [{ id: 'overview', name: 'Overview', shared: true, views: [] }, ...otherPages],
   })
 }
 
-// POST — create page or view
+// POST — save dashboard (admin/analyst only)
 export async function POST(req: NextRequest) {
-  const auth = await getAuth(req)
-  if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const user = await getUser(req)
+  if (!user?.company_id) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  if (user.role === 'viewer') return NextResponse.json({ error: 'Viewers cannot edit dashboards' }, { status: 403 })
 
-  const body = await req.json()
+  const { customViews = [], pages = [] } = await req.json()
 
-  if (body.type === 'page') {
-    const { data: existing } = await supabaseAdmin.from('dashboard_pages').select('id').eq('company_id', auth.companyId)
-    const { data, error } = await supabaseAdmin.from('dashboard_pages').insert({
-      company_id: auth.companyId, created_by: auth.userId,
-      name: body.name||'New page', order_index: existing?.length||0
-    }).select('id,name,order_index').single()
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ page: data })
+  // Get or create Overview page
+  const { data: overviewPage } = await supabaseAdmin
+    .from('dashboard_pages')
+    .select('id')
+    .eq('company_id', user.company_id)
+    .eq('name', 'Overview')
+    .single()
+
+  let overviewPageId = overviewPage?.id
+  if (!overviewPageId) {
+    const { data: newPage, error: pgErr } = await supabaseAdmin
+      .from('dashboard_pages')
+      .insert({ company_id: user.company_id, created_by: user.id, name: 'Overview', order_index: 0, created_at: new Date().toISOString() })
+      .select('id').single()
+    if (pgErr) return NextResponse.json({ error: pgErr.message }, { status: 500 })
+    overviewPageId = newPage?.id
   }
 
-  if (body.type === 'view') {
-    // Run query and cache results immediately
-    let rowsCache = null, fieldsCache = null, cachedAt = null
-    try {
-      const result = await runSQL(body.sql)
-      rowsCache = result.rows.slice(0,500)
-      fieldsCache = result.fields
-      cachedAt = new Date().toISOString()
-    } catch {}
+  // Delete all existing views for this company
+  await supabaseAdmin.from('dashboard_views').delete().eq('company_id', user.company_id)
 
-    const { data: existing } = await supabaseAdmin.from('dashboard_views').select('id').eq('page_id', body.pageId)
-    const { data, error } = await supabaseAdmin.from('dashboard_views').insert({
-      page_id: body.pageId, company_id: auth.companyId,
-      name: body.name, sql_query: body.sql, viz_type: body.vizType||'auto',
-      card_width: body.w||380, card_height: body.h||250,
-      shared: body.shared||false,
-      rows_cache: rowsCache, fields_cache: fieldsCache, cached_at: cachedAt,
-      order_index: existing?.length||0
-    }).select('id,name').single()
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ view: { ...data, rows_cache: rowsCache, fields_cache: fieldsCache } })
+  const allViews: any[] = []
+
+  const buildView = (v: any, pageId: string, i: number) => ({
+    // Only use id if it's a real UUID, otherwise let Supabase generate one
+    ...(isUUID(v.id) ? { id: v.id } : {}),
+    page_id: pageId,
+    company_id: user.company_id,
+    name: v.name || 'Untitled',
+    sql_query: v.sql || '',
+    viz_type: v.viz || 'bar',
+    card_width: v.gw ? Number(v.gw) : (Number(v.w) || 480),
+    card_height: v.gh ? Number(v.gh) : (Number(v.h) || 280),
+    color: (v.gx != null && v.gy != null) ? `${v.gx}:${v.gy}` : null,
+    shared: v.shared ?? true,
+    order_index: i,
+    // rows_cache is jsonb — store as JSON
+    rows_cache: Array.isArray(v.rows) && v.rows.length > 0 ? v.rows : null,
+    // fields_cache is ARRAY type in Supabase — must be a proper array
+    fields_cache: Array.isArray(v.fields) && v.fields.length > 0 ? v.fields : null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })
+
+  customViews.forEach((v: any, i: number) => {
+    allViews.push(buildView(v, overviewPageId, i))
+  })
+
+  // Handle custom pages — track which page IDs we keep
+  const keptPageIds: string[] = [overviewPageId]
+
+  for (const pg of pages) {
+    if (pg.id === 'overview') continue
+
+    // Find existing page or create new one
+    let pageId: string | null = null
+    if (isUUID(pg.id)) {
+      const { data: existing } = await supabaseAdmin
+        .from('dashboard_pages').select('id').eq('id', pg.id).single()
+      if (existing) pageId = existing.id
+    }
+
+    if (!pageId) {
+      const { data: newPg } = await supabaseAdmin
+        .from('dashboard_pages')
+        .insert({ company_id: user.company_id, created_by: user.id, name: pg.name, order_index: pages.indexOf(pg), created_at: new Date().toISOString() })
+        .select('id').single()
+      pageId = newPg?.id
+    } else {
+      await supabaseAdmin.from('dashboard_pages')
+        .update({ name: pg.name, order_index: pages.indexOf(pg) })
+        .eq('id', pageId)
+    }
+
+    if (!pageId) continue
+    keptPageIds.push(pageId)
+    pg.views?.forEach((v: any, i: number) => allViews.push(buildView(v, pageId!, i)))
   }
 
-  return NextResponse.json({ error: 'Invalid type' }, { status: 400 })
-}
+  // Delete pages that were removed by the user
+  await supabaseAdmin.from('dashboard_pages')
+    .delete()
+    .eq('company_id', user.company_id)
+    .not('id', 'in', `(${keptPageIds.join(',')})`)
 
-// PATCH — update view size/type/name or refresh cache
-export async function PATCH(req: NextRequest) {
-  const auth = await getAuth(req)
-  if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const body = await req.json()
-
-  if (body.type === 'refresh_view') {
-    const result = await runSQL(body.sql)
-    await supabaseAdmin.from('dashboard_views').update({
-      rows_cache: result.rows.slice(0,500), fields_cache: result.fields, cached_at: new Date().toISOString()
-    }).eq('id', body.viewId).eq('company_id', auth.companyId)
-    return NextResponse.json({ rows: result.rows.slice(0,500), fields: result.fields })
+  if (allViews.length > 0) {
+    const { error } = await supabaseAdmin.from('dashboard_views').insert(allViews)
+    if (error) {
+      console.error('Dashboard POST insert error:', error.message)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
   }
 
-  if (body.type === 'update_view') {
-    await supabaseAdmin.from('dashboard_views').update({
-      viz_type: body.vizType, card_width: body.w, card_height: body.h,
-      name: body.name, shared: body.shared,
-    }).eq('id', body.viewId).eq('company_id', auth.companyId)
-    return NextResponse.json({ ok: true })
-  }
-
-  if (body.type === 'rename_page') {
-    await supabaseAdmin.from('dashboard_pages').update({ name: body.name }).eq('id', body.pageId).eq('company_id', auth.companyId)
-    return NextResponse.json({ ok: true })
-  }
-
-  return NextResponse.json({ error: 'Invalid type' }, { status: 400 })
-}
-
-// DELETE — remove page or view
-export async function DELETE(req: NextRequest) {
-  const auth = await getAuth(req)
-  if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const { type, id } = await req.json()
-  if (type === 'page') await supabaseAdmin.from('dashboard_pages').delete().eq('id', id).eq('company_id', auth.companyId)
-  if (type === 'view') await supabaseAdmin.from('dashboard_views').delete().eq('id', id).eq('company_id', auth.companyId)
   return NextResponse.json({ ok: true })
 }

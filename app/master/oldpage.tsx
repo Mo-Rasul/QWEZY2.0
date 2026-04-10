@@ -230,7 +230,7 @@ function UserModal({user,companies,onClose,onSaved}:{user?:User;companies:Compan
       </Field>
       <Field label="Role">
         <div style={{display:'flex',gap:8}}>
-          {[['admin','Admin','Full access'],['analyst','Analyst','Build & query'],['viewer','Viewer','Read only']].map(([v,l,d])=>(
+          {[['admin','Admin','Full access'],['editor','Editor','Build & query'],['viewer','Viewer','Read only']].map(([v,l,d])=>(
             <button key={v} onClick={()=>setRole(v)} style={{flex:1,padding:'8px 6px',borderRadius:7,border:'1.5px solid',cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'center',borderColor:role===v?C.accent:C.cardBorder,background:role===v?C.accentBg:'#fff'}}>
               <div style={{fontSize:12.5,fontWeight:600,color:role===v?C.accent:C.text}}>{l}</div>
               <div style={{fontSize:10.5,color:C.textLight}}>{d}</div>
@@ -373,7 +373,7 @@ function CompaniesTab({companies,onRefresh}:{companies:Company[];onRefresh:()=>v
                 <tr key={u.id} style={{borderBottom:'1px solid #F1F5F9'}}>
                   <td style={{padding:'7px 8px',fontWeight:500,color:C.text}}>{u.name}</td>
                   <td style={{padding:'7px 8px',color:C.textMuted}}>{u.email}</td>
-                  <td style={{padding:'7px 8px'}}><Badge text={u.role} color={u.role==='admin'?C.accent:u.role==='analyst'?'#3B82F6':'#8B5CF6'}/></td>
+                  <td style={{padding:'7px 8px'}}><Badge text={u.role} color={u.role==='admin'?C.accent:u.role==='editor'?'#3B82F6':'#8B5CF6'}/></td>
                   <td style={{padding:'7px 8px'}}><Badge text={u.status} color={u.status==='active'?C.success:C.danger}/></td>
                   <td style={{padding:'7px 8px',color:C.textLight,fontSize:12}}>{u.last_seen?new Date(u.last_seen).toLocaleDateString():'Never'}</td>
                 </tr>
@@ -434,7 +434,7 @@ function UsersTab({companies,onRefresh}:{companies:Company[];onRefresh:()=>void}
       <select value={filterRole} onChange={e=>setFilterRole(e.target.value)}
         style={{padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
         <option value="">All roles</option>
-        {['admin','analyst','viewer'].map(r=><option key={r} value={r}>{r}</option>)}
+        {['admin','editor','viewer'].map(r=><option key={r} value={r}>{r}</option>)}
       </select>
       <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}
         style={{padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
@@ -456,7 +456,7 @@ function UsersTab({companies,onRefresh}:{companies:Company[];onRefresh:()=>void}
               <td style={{padding:'9px 14px',fontWeight:500,color:C.text}}>{u.name}</td>
               <td style={{padding:'9px 14px',color:C.textMuted,fontSize:12}}>{u.email}</td>
               <td style={{padding:'9px 14px',color:C.text,fontSize:12}}>{(u as any).companyName}</td>
-              <td style={{padding:'9px 14px'}}><Badge text={u.role} color={u.role==='admin'?C.accent:u.role==='analyst'?'#3B82F6':'#8B5CF6'}/></td>
+              <td style={{padding:'9px 14px'}}><Badge text={u.role} color={u.role==='admin'?C.accent:u.role==='editor'?'#3B82F6':'#8B5CF6'}/></td>
               <td style={{padding:'9px 14px'}}><Badge text={u.status} color={u.status==='active'?C.success:C.danger}/></td>
               <td style={{padding:'9px 14px',color:C.textLight,fontSize:12}}>{u.last_seen?new Date(u.last_seen).toLocaleDateString():'Never'}</td>
               <td style={{padding:'9px 14px'}}>

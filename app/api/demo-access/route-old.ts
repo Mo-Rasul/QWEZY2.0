@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from '@/lib/supabase-app'
 
-const DEMO_COMPANY_ID = '68065cb1-48d7-4488-bd78-9e354e6fb53f' // Northwind Demo company
+const DEMO_COMPANY_ID = '4dd68cdf-b52f-4a91-aae1-51ffbc9423db'
 const DEMO_PASSWORD   = process.env.DEMO_USER_PASSWORD || 'QwezyDemo2026!'
 const RESEND_KEY      = process.env.RESEND_API_KEY
 
@@ -75,35 +75,22 @@ export async function POST(req: NextRequest) {
     // Mark code as used
     await supabaseAdmin.from('otp_codes' as any).update({ used: true }).eq('email', email)
 
-    // Code is correct — sign in as the individual user
+    // Code is correct — sign into shared Velo demo account
     const supabasePublic = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
 
     const { data: signIn, error: signInErr } = await supabasePublic.auth.signInWithPassword({
-      email,
-      password: DEMO_PASSWORD,
+      email: 'velo@demo.qwezy.io',
+      password: 'Qwezy123!'
     })
 
     if (signInErr || !signIn.session) {
-      // Try resetting password and signing in again
-      await supabaseAdmin.auth.admin.updateUserById(
-        (await supabaseAdmin.auth.admin.listUsers()).data.users.find((u: any) => u.email === email)?.id || '',
-        { password: DEMO_PASSWORD }
-      )
-      const retry = await supabasePublic.auth.signInWithPassword({ email, password: DEMO_PASSWORD })
-      if (retry.error || !retry.data.session) {
-        return NextResponse.json({ error: 'Could not access demo. Please try again.' }, { status: 500 })
-      }
-      const res = NextResponse.json({ ok: true, name: name?.split(' ')[0] })
-      const opts = { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' as const, maxAge: 60 * 60 * 24 * 7, path: '/' }
-      res.cookies.set('qwezy_session', retry.data.session.access_token, opts)
-      res.cookies.set('qwezy_company', DEMO_COMPANY_ID, opts)
-      return res
+      return NextResponse.json({ error: 'Could not access demo. Please try again.' }, { status: 500 })
     }
 
-    const res = NextResponse.json({ ok: true, name: name?.split(' ')[0] })
+    const res = NextResponse.json({ ok: true })
     const opts = {
       httpOnly: true, secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const, maxAge: 60 * 60 * 24 * 7, path: '/',
@@ -137,7 +124,7 @@ export async function POST(req: NextRequest) {
       if (!authErr && authData.user) {
         await supabaseAdmin.from('users').upsert({
           id: authData.user.id, company_id: DEMO_COMPANY_ID,
-          email, name, role: 'viewer', status: 'active',
+          email, name, role: 'analyst', status: 'active',
         }, { onConflict: 'id' })
       }
     } else {

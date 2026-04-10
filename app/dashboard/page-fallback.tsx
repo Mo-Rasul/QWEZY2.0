@@ -3,7 +3,6 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, CartesianGrid, Legend } from 'recharts'
 
-
 const C = {
   navBg:'#022c22', navBorder:'#064e3b', navText:'#6ee7b7', navActive:'#10b981',
   bg:'#F6F9FC', sidebar:'#FFFFFF', sidebarBorder:'#E3EAF2',
@@ -459,140 +458,40 @@ function RelationshipsDiagram({onTableClick,onTableContext,tables=TABLES}:{onTab
   const [hov,setHov]=useState<string|null>(null)
   const [hovEdge,setHovEdge]=useState<string|null>(null)
   const [tooltip,setTooltip]=useState<{x:number,y:number,label:string}|null>(null)
-  const BW=148, BH=52
-
-  // BFS radial layout: most-connected table at centre, rings outward
-  const {positions,svgW,svgH}=useMemo(()=>{
-    const n=tables.length
-    if(!n) return {positions:{} as Record<string,{x:number,y:number}>,svgW:700,svgH:420}
-    // Build undirected adjacency
-    const adj:Record<string,Set<string>>={}
-    tables.forEach(t=>{
-      if(!adj[t.name])adj[t.name]=new Set()
-      t.joins?.forEach((j:any)=>{
-        adj[t.name].add(j.to)
-        if(!adj[j.to])adj[j.to]=new Set()
-        adj[j.to].add(t.name)
-      })
-    })
-    // Pick most-connected as root; BFS outward
-    const sorted=[...tables].sort((a,b)=>(adj[b.name]?.size||0)-(adj[a.name]?.size||0))
-    const levels:Record<number,string[]>={0:[sorted[0].name]}
-    const placed=new Set([sorted[0].name])
-    const q=[{name:sorted[0].name,lv:0}];let qi=0
-    while(qi<q.length){
-      const {name,lv}=q[qi++]
-      for(const nb of Array.from(adj[name]||new Set<string>())){
-        if(!placed.has(nb)){placed.add(nb);if(!levels[lv+1])levels[lv+1]=[];levels[lv+1].push(nb);q.push({name:nb,lv:lv+1})}
-      }
-    }
-    // Isolated tables go in an extra ring
-    tables.forEach(t=>{if(!placed.has(t.name)){const ml=Math.max(...Object.keys(levels).map(Number))+1;if(!levels[ml])levels[ml]=[];levels[ml].push(t.name)}})
-    // Compute SVG size from rings
-    const numLevels=Math.max(...Object.keys(levels).map(Number))
-    const RING=200 // px between rings
-    const R=numLevels*RING+160
-    const svgW=Math.max(700,R*2+BW+40)
-    const svgH=Math.max(420,R*2+BH+40)
-    const cx=svgW/2,cy=svgH/2
-    // Assign positions
-    const positions:Record<string,{x:number,y:number}>={}
-    Object.entries(levels).forEach(([lvStr,names])=>{
-      const lv=parseInt(lvStr)
-      if(lv===0){positions[names[0]]={x:cx-BW/2,y:cy-BH/2};return}
-      const r=lv*RING
-      const startAngle=-Math.PI/2 // top
-      names.forEach((name,i)=>{
-        const a=startAngle+(2*Math.PI*i/names.length)
-        positions[name]={x:cx+r*Math.cos(a)-BW/2,y:cy+r*Math.sin(a)-BH/2}
-      })
-    })
-    return {positions,svgW,svgH}
-  },[tables])
-
-  // Deduplicated edges
-  const edges=tables.flatMap(t=>(t.joins||[]).map((j:any)=>({from:t.name,to:j.to,on:j.on,key:`${t.name}~~${j.to}`}))).filter((e,i,arr)=>arr.findIndex(x=>(x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from))===i)
-
-  // Exit point from a box toward a target centre, plus bezier control point
-  const edgePath=(fromName:string,toName:string)=>{
-    const fp=positions[fromName],tp=positions[toName]
-    if(!fp||!tp) return ''
-    const fcx=fp.x+BW/2,fcy=fp.y+BH/2,tcx=tp.x+BW/2,tcy=tp.y+BH/2
-    const dx=tcx-fcx,dy=tcy-fcy,dist=Math.sqrt(dx*dx+dy*dy)||1
-    const exit=(bx:number,by:number,tdx:number,tdy:number)=>{
-      if(Math.abs(tdx)*BH>Math.abs(tdy)*BW) return {x:bx+(tdx>0?BW:0),y:by+BH/2}
-      return {x:bx+BW/2,y:by+(tdy>0?BH:0)}
-    }
-    const p1=exit(fp.x,fp.y,dx,dy),p2=exit(tp.x,tp.y,-dx,-dy)
-    const bend=Math.min(dist*0.35,110)
-    const nx=dx/dist,ny=dy/dist
-    return `M${p1.x},${p1.y} C${p1.x+nx*bend},${p1.y+ny*bend} ${p2.x-nx*bend},${p2.y-ny*bend} ${p2.x},${p2.y}`
-  }
-
+  const edges=tables.flatMap(t=>t.joins.map(j=>({from:t.name,to:j.to,on:j.on,key:`${t.name}-${j.to}`}))).filter((e,i,arr)=>arr.findIndex(x=>(x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from))===i)
+  const pos=(name:string)=>tables.find(t=>t.name===name)||{x:0,y:0,color:C.accent}
   return(
     <div style={{padding:24,position:'relative'}}>
       <h2 style={{fontSize:17,fontWeight:600,color:C.text,marginBottom:2,letterSpacing:'-0.3px'}}>Table Relationships</h2>
       <p style={{fontSize:12.5,color:C.textMuted,marginBottom:16}}>Click a table to inspect · Hover a connection to see the join condition</p>
       {tooltip&&<div style={{position:'fixed',left:tooltip.x+14,top:tooltip.y-38,background:'#1B2432',color:'#fff',fontFamily:"'JetBrains Mono'",fontSize:12,fontWeight:500,padding:'6px 12px',borderRadius:6,pointerEvents:'none',zIndex:9999,whiteSpace:'nowrap',boxShadow:'0 4px 12px rgba(0,0,0,0.3)'}}>{tooltip.label}</div>}
-      <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,0.04)',overflowX:'auto'}}>
-        <svg width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`} style={{display:'block',minWidth:'100%'}}>
-          <defs>
-            <pattern id="rdgrid" width="32" height="32" patternUnits="userSpaceOnUse">
-              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#F1F5F9" strokeWidth="1"/>
-            </pattern>
-            <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-              <path d="M0,0 L0,6 L6,3 z" fill="#CBD5E1"/>
-            </marker>
-            <marker id="arrH" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-              <path d="M0,0 L0,6 L6,3 z" fill={C.accent}/>
-            </marker>
-          </defs>
-          <rect width={svgW} height={svgH} fill="url(#rdgrid)" rx="8"/>
+      <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+        <svg width="100%" viewBox="0 0 860 480" style={{display:'block',overflow:'visible'}}>
+          <defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#F1F5F9" strokeWidth="1"/></pattern></defs>
+          <rect width="860" height="480" fill="url(#grid)" rx="6"/>
           {edges.map(e=>{
-            const d=edgePath(e.from,e.to)
-            const isH=hovEdge===e.key
-            return d?(<g key={e.key}>
-              <path d={d} stroke={isH?C.accent:'#CBD5E1'} strokeWidth={isH?2:1.5} fill="none"
-                strokeDasharray={isH?undefined:'5,3'}
-                markerEnd={isH?'url(#arrH)':'url(#arr)'}
-                style={{pointerEvents:'none'}}/>
-              <path d={d} stroke="transparent" strokeWidth={20} fill="none" style={{cursor:'pointer'}}
-                onMouseEnter={ev=>{setHovEdge(e.key);setTooltip({x:ev.clientX,y:ev.clientY,label:`${e.from} → ${e.to}  ·  ${e.on}`})}}
+            const f=pos(e.from),t=pos(e.to),isH=hovEdge===e.key
+            return(<g key={e.key}>
+              <line x1={f.x+62} y1={f.y+22} x2={t.x+62} y2={t.y+22} stroke={isH?C.accent:'#CBD5E1'} strokeWidth={isH?2:1.5} strokeDasharray={isH?'none':'6,3'} style={{pointerEvents:'none'}}/>
+              <line x1={f.x+62} y1={f.y+22} x2={t.x+62} y2={t.y+22} stroke="transparent" strokeWidth={22} style={{cursor:'pointer'}}
+                onMouseEnter={ev=>{setHovEdge(e.key);setTooltip({x:ev.clientX,y:ev.clientY,label:`${e.from} — ${e.to}  ·  ON ${e.on}`})}}
                 onMouseMove={ev=>setTooltip(p=>p?{...p,x:ev.clientX,y:ev.clientY}:null)}
                 onMouseLeave={()=>{setHovEdge(null);setTooltip(null)}}/>
-            </g>):null
+            </g>)
           })}
-          {tables.map(t=>{
-            const p=positions[t.name];if(!p)return null
-            const isH=hov===t.name
-            const deg=tables.findIndex(x=>x.name===t.name)
-            return(
-              <g key={t.name} style={{cursor:'pointer'}}
-                onMouseEnter={()=>setHov(t.name)} onMouseLeave={()=>setHov(null)}
-                onClick={()=>onTableClick(t)}
-                onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
-                <rect x={p.x} y={p.y} width={BW} height={BH} rx={8}
-                  fill={isH?t.color:'#fff'}
-                  stroke={isH?t.color:C.cardBorder}
-                  strokeWidth={isH?2:1}
-                  style={{filter:isH?`drop-shadow(0 2px 8px ${t.color}55)`:'drop-shadow(0 1px 3px rgba(0,0,0,0.07))'}}/>
-                {/* colour dot */}
-                <circle cx={p.x+14} cy={p.y+BH/2} r={4} fill={isH?'rgba(255,255,255,0.7)':t.color}/>
-                <text x={p.x+26} y={p.y+20} style={{fontSize:12,fontFamily:"'JetBrains Mono'",fontWeight:700,fill:isH?'#fff':C.text,userSelect:'none'}}>{t.name}</text>
-                <text x={p.x+26} y={p.y+35} style={{fontSize:9.5,fontFamily:'Inter,sans-serif',fill:isH?'rgba(255,255,255,0.72)':C.textLight,userSelect:'none'}}>{Number(t.rows||0).toLocaleString()} rows</text>
-              </g>
-            )
-          })}
+          {tables.map(t=>{const isH=hov===t.name;return(
+            <g key={t.name} style={{cursor:'pointer'}} onMouseEnter={()=>setHov(t.name)} onMouseLeave={()=>setHov(null)} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
+
+              <rect x={t.x} y={t.y} width={125} height={44} rx={6} fill={isH?t.color:'#fff'} stroke={isH?t.color:C.cardBorder} strokeWidth={isH?1.5:1}/>
+              <text x={t.x+62} y={t.y+17} textAnchor="middle" style={{fontSize:11.5,fontFamily:"'JetBrains Mono'",fontWeight:600,fill:isH?'#fff':C.text}}>{t.name}</text>
+              <text x={t.x+62} y={t.y+32} textAnchor="middle" style={{fontSize:9.5,fontFamily:'Inter,sans-serif',fill:isH?'rgba(255,255,255,0.75)':C.textLight}}>{t.rows} rows</text>
+            </g>
+          )})}
         </svg>
         <div style={{display:'flex',gap:12,flexWrap:'wrap',borderTop:`1px solid ${C.cardBorder}`,paddingTop:12,marginTop:8}}>
-          {tables.map(t=>(
-            <div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}}
-              onClick={()=>onTableClick(t)}
-              onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
-              <div style={{width:7,height:7,borderRadius:'50%',background:t.color}}/>
-              <span style={{fontSize:11.5,color:C.textMuted,fontFamily:"'JetBrains Mono'"}}>{t.name}</span>
-            </div>
-          ))}
+          {tables.map(t=><div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
+            <div style={{width:7,height:7,borderRadius:'50%',background:t.color}}/><span style={{fontSize:11.5,color:C.textMuted,fontFamily:"'JetBrains Mono'"}}>{t.name}</span>
+          </div>)}
         </div>
       </div>
     </div>
@@ -1603,7 +1502,7 @@ function ReportsTab({sharedResults,onResultSaved,currentUser,hasDb=false}:{share
 
   const addReport=async()=>{
     if(!newReport.name||!newReport.sql) return
-    const id=crypto?.randomUUID?.()||`r${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const id=`r${Date.now()}`
     // Save to DB
     const saveRes=await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       name:newReport.name,description:newReport.description,sql:newReport.sql,
@@ -2085,105 +1984,54 @@ function AlertsTab({isCompanyUser=false,hasDb=false,userRole='viewer'}:{isCompan
 }
 
 // ── Draggable Grid ────────────────────────────────────────────────────────────
-type LivePos = {id:string,x:number,y:number,w:number,h:number}
-
-function getDefaultPos(v:DashView,i:number){
-  const col=i%3, row=Math.floor(i/3)
-  return {
-    x: v.gx ?? (v.viz==='table'||v.viz==='stacked' ? 0 : col*420),
-    y: v.gy ?? row*300,
-    w: v.gw ?? (v.viz==='kpi' ? 240 : v.viz==='table'||v.viz==='stacked' ? 900 : 380),
-    h: v.gh ?? (v.viz==='kpi' ? 120 : v.viz==='table' ? 300 : 260),
-  }
-}
-
 function DashGrid({views,onRemove,onEdit,onReorder}:{views:DashView[],onRemove:(id:string)=>void,onEdit:(v:DashView)=>void,onReorder:(views:DashView[])=>void}) {
-  const [live,setLive]=useState<LivePos|null>(null)
-  const viewsRef=useRef(views)
-  useEffect(()=>{viewsRef.current=views},[views])
+  const [dragIdx,setDragIdx]=useState<number|null>(null)
+  const [overIdx,setOverIdx]=useState<number|null>(null)
 
-  const commit=(id:string,changes:{gx?:number,gy?:number,gw?:number,gh?:number})=>{
-    onReorder(viewsRef.current.map(v=>v.id===id?{...v,...changes}:v))
-  }
-
-  const startDrag=(e:React.MouseEvent,v:DashView,i:number)=>{
-    if((e.target as HTMLElement).closest('.dash-no-drag'))return
+  const handleDragStart=(i:number)=>setDragIdx(i)
+  const handleDragEnd=()=>{setDragIdx(null);setOverIdx(null)}
+  const handleDrop=(e:React.DragEvent,i:number)=>{
     e.preventDefault()
-    const pos=getDefaultPos(v,i)
-    const ox=e.clientX-pos.x, oy=e.clientY-pos.y
-    const onMove=(ev:MouseEvent)=>{
-      setLive({id:v.id,x:Math.max(0,ev.clientX-ox),y:Math.max(0,ev.clientY-oy),w:pos.w,h:pos.h})
-    }
-    const onUp=(ev:MouseEvent)=>{
-      const x=Math.round(Math.max(0,ev.clientX-ox))
-      const y=Math.round(Math.max(0,ev.clientY-oy))
-      setLive(null)
-      commit(v.id,{gx:x,gy:y})
-      window.removeEventListener('mousemove',onMove)
-      window.removeEventListener('mouseup',onUp)
-    }
-    window.addEventListener('mousemove',onMove)
-    window.addEventListener('mouseup',onUp)
+    if(dragIdx===null||dragIdx===i){setDragIdx(null);setOverIdx(null);return}
+    const next=[...views]
+    const [item]=next.splice(dragIdx,1)
+    next.splice(i,0,item)
+    onReorder(next)
+    setDragIdx(null);setOverIdx(null)
   }
 
-  const startResize=(e:React.MouseEvent,v:DashView,i:number,handle:string)=>{
-    e.preventDefault();e.stopPropagation()
-    const pos=getDefaultPos(v,i)
-    const sx=e.clientX,sy=e.clientY
-    const {x:px,y:py,w:pw,h:ph}=pos
-    const onMove=(ev:MouseEvent)=>{
-      const dx=ev.clientX-sx, dy=ev.clientY-sy
-      let x=px,y=py,w=pw,h=ph
-      if(handle.includes('e')) w=Math.max(80,pw+dx)
-      if(handle.includes('s')) h=Math.max(60,ph+dy)
-      if(handle.includes('w')){w=Math.max(80,pw-dx);x=px+pw-w}
-      if(handle.includes('n')){h=Math.max(60,ph-dy);y=py+ph-h}
-      setLive({id:v.id,x,y,w,h})
-    }
-    const onUp=(ev:MouseEvent)=>{
-      const dx=ev.clientX-sx, dy=ev.clientY-sy
-      let x=px,y=py,w=pw,h=ph
-      if(handle.includes('e')) w=Math.max(80,pw+dx)
-      if(handle.includes('s')) h=Math.max(60,ph+dy)
-      if(handle.includes('w')){w=Math.max(80,pw-dx);x=px+pw-w}
-      if(handle.includes('n')){h=Math.max(60,ph-dy);y=py+ph-h}
-      setLive(null)
-      commit(v.id,{gx:Math.round(x),gy:Math.round(y),gw:Math.round(w),gh:Math.round(h)})
-      window.removeEventListener('mousemove',onMove)
-      window.removeEventListener('mouseup',onUp)
-    }
-    window.addEventListener('mousemove',onMove)
-    window.addEventListener('mouseup',onUp)
-  }
-
-  const canvasH=views.reduce((m,v,i)=>{
-    const p=live?.id===v.id?live:getDefaultPos(v,i)
-    return Math.max(m,p.y+p.h+60)
-  },500)
-
-  const HS=8 // handle size px
+  const wrapStyle=(i:number)=>({
+    opacity:dragIdx===i?0.4:1,
+    outline:overIdx===i&&dragIdx!==i?`2px dashed ${C.accent}`:'none',
+    outlineOffset:2,
+    borderRadius:10,
+    cursor:'grab',
+    transition:'opacity .15s',
+  })
 
   return(
-    <div style={{position:'relative',minHeight:canvasH}}>
-      {views.map((v,i)=>{
-        const base=getDefaultPos(v,i)
-        const p=live?.id===v.id?{x:live.x,y:live.y,w:live.w,h:live.h}:base
-        const isDragging=live?.id===v.id
-        return(
-          <div key={v.id} style={{position:'absolute',left:p.x,top:p.y,width:p.w,height:p.h,zIndex:isDragging?100:1,userSelect:'none'}}>
-            <DashCard view={v} onRemove={()=>onRemove(v.id)} onEdit={()=>onEdit(v)} onHeaderMouseDown={e=>startDrag(e,v,i)}/>
-            {/* resize handles */}
-            <div onMouseDown={e=>startResize(e,v,i,'se')} style={{position:'absolute',bottom:0,right:0,width:HS,height:HS,cursor:'se-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'sw')} style={{position:'absolute',bottom:0,left:0,width:HS,height:HS,cursor:'sw-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'ne')} style={{position:'absolute',top:0,right:0,width:HS,height:HS,cursor:'ne-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'nw')} style={{position:'absolute',top:0,left:0,width:HS,height:HS,cursor:'nw-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'e')} style={{position:'absolute',right:0,top:HS,bottom:HS,width:HS,cursor:'e-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'w')} style={{position:'absolute',left:0,top:HS,bottom:HS,width:HS,cursor:'w-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'s')} style={{position:'absolute',bottom:0,left:HS,right:HS,height:HS,cursor:'s-resize',zIndex:10}}/>
-            <div onMouseDown={e=>startResize(e,v,i,'n')} style={{position:'absolute',top:0,left:HS,right:HS,height:HS,cursor:'n-resize',zIndex:10}}/>
+    <div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(440px,1fr))',gap:14,marginBottom:14}}>
+        {views.map((v,i)=>v.viz!=='table'?(
+          <div key={v.id}
+            onDragOver={e=>{e.preventDefault();setOverIdx(i)}}
+            onDrop={e=>handleDrop(e,i)}
+            style={wrapStyle(i)}>
+            <DashCard view={v} onRemove={()=>onRemove(v.id)} onEdit={()=>onEdit(v)}
+              onDragStart={()=>handleDragStart(i)} onDragEnd={handleDragEnd}/>
           </div>
-        )
-      })}
+        ):null)}
+      </div>
+      {views.map((v,i)=>v.viz==='table'?(
+        <div key={v.id} draggable
+          onDragStart={()=>handleDragStart(i)}
+          onDragOver={e=>{e.preventDefault();setOverIdx(i)}}
+          onDrop={e=>handleDrop(e,i)}
+          onDragEnd={handleDragEnd}
+          style={{...wrapStyle(i),marginBottom:14}}>
+          <DashCard view={v} onRemove={()=>onRemove(v.id)} onEdit={()=>onEdit(v)}/>
+        </div>
+      ):null)}
     </div>
   )
 }
@@ -2196,56 +2044,10 @@ const PRESET_KPIS = [
   { id:'k4', name:'Avg Order Value', sql:`SELECT ROUND(AVG(t),0) AS value FROM (SELECT SUM(od.unit_price*od.quantity*(1-od.discount)) AS t FROM orders o JOIN order_details od ON o.order_id=od.order_id GROUP BY o.order_id) x`, prefix:'$' },
 ]
 
-type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi'|'donut',w:number,h:number,color?:string,rows?:any[],fields?:string[],size?:'normal'|'wide'|'full'|'sm'|'md'|'lg',order?:number,gx?:number,gy?:number,gw?:number,gh?:number}
+type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi'|'donut',w:number,h:number,color?:string,rows?:any[],fields?:string[],size?:'sm'|'md'|'lg'|'full',order?:number}
 type DashPage = {id:string,name:string,views:DashView[],shared?:boolean,createdBy?:string}
 
 // ── Shared chart renderer ─────────────────────────────────────────────────────
-function DonutChart({slices,total,height}:{slices:any[],total:number,height:any}) {
-  const [tooltip,setTooltip]=useState<{label:string,val:number,pct:number,x:number,y:number}|null>(null)
-  const svgSize=typeof height==='number'?Math.min(height*0.85,220):180
-  return(
-    <div style={{display:'flex',alignItems:'center',width:'100%',height:'100%',gap:12,padding:'8px 12px',overflow:'hidden',boxSizing:'border-box',position:'relative'}}>
-      <svg viewBox="0 0 100 100" style={{width:svgSize,height:svgSize,flexShrink:0}}
-        onMouseLeave={()=>setTooltip(null)}>
-        {slices.map((s,i)=>(
-          <path key={i} d={s.path} fill={s.color} stroke="#fff" strokeWidth="1"
-            style={{cursor:'pointer',transition:'opacity .1s'}}
-            onMouseEnter={e=>{
-              const svg=(e.target as SVGPathElement).closest('svg')!.getBoundingClientRect()
-              setTooltip({label:s.label,val:s.val,pct:s.pct,x:e.clientX-svg.left,y:e.clientY-svg.top})
-            }}
-            onMouseMove={e=>{
-              const svg=(e.target as SVGPathElement).closest('svg')!.getBoundingClientRect()
-              setTooltip(t=>t?{...t,x:e.clientX-svg.left,y:e.clientY-svg.top}:null)
-            }}
-          />
-        ))}
-        <circle cx="50" cy="50" r="21" fill="#fff"/>
-        <text x="50" y="53" textAnchor="middle" style={{fontSize:8,fontWeight:700,fill:C.text,fontFamily:'Inter,sans-serif'}}>
-          {total>=1000?`${(total/1000).toFixed(1)}k`:String(Math.round(total))}
-        </text>
-        {tooltip&&(
-          <foreignObject x={Math.min(tooltip.x+4,60)} y={Math.max(tooltip.y-28,2)} width="70" height="32" style={{pointerEvents:'none'}}>
-            <div style={{background:'rgba(15,25,35,0.88)',color:'#fff',fontSize:9,padding:'4px 7px',borderRadius:5,whiteSpace:'nowrap',fontFamily:'Inter,sans-serif',lineHeight:1.5}}>
-              <div style={{fontWeight:600}}>{tooltip.label}</div>
-              <div>{tooltip.val.toLocaleString()} · {Math.round(tooltip.pct*100)}%</div>
-            </div>
-          </foreignObject>
-        )}
-      </svg>
-      <div style={{flex:1,overflow:'auto',display:'flex',flexDirection:'column',gap:4,minWidth:0}}>
-        {slices.map((s,i)=>(
-          <div key={i} style={{display:'flex',alignItems:'center',gap:6}}>
-            <div style={{width:8,height:8,borderRadius:'50%',background:s.color,flexShrink:0}}/>
-            <span style={{fontSize:11,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.label}</span>
-            <span style={{fontSize:11,fontWeight:600,color:C.textMuted,flexShrink:0}}>{Math.round(s.pct*100)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 function ViewChart({viz,rows,fields,color=C.accent,height=200}:{viz:string,rows:any[],fields:string[],color?:string,height?:number}) {
   const lk=fields[0]||'', vk=fields[1]||''
   if(!rows.length) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height,color:C.textLight,fontSize:13}}>No data</div>
@@ -2268,11 +2070,26 @@ function ViewChart({viz,rows,fields,color=C.accent,height=200}:{viz:string,rows:
       const xi1=cx+inner*Math.sin(toRad(sa)),yi1=cy-inner*Math.cos(toRad(sa))
       const xi2=cx+inner*Math.sin(toRad(ea)),yi2=cy-inner*Math.cos(toRad(ea))
       const large=angle>180?1:0
-      const label=String(Object.values(row)[0])
-      return{row,val,pct,label,color:colors[i%colors.length],path:`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${inner},${inner} 0 ${large},0 ${xi1},${yi1} Z`}
+      return{row,val,pct,color:colors[i%colors.length],path:`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${inner},${inner} 0 ${large},0 ${xi1},${yi1} Z`}
     })
     return(
-      <DonutChart slices={slices} total={total} height={height}/>
+      <div style={{display:'flex',alignItems:'center',height,gap:16,padding:'0 12px',overflow:'hidden'}}>
+        <svg viewBox="0 0 100 100" style={{width:Math.min(height*0.85,200),height:Math.min(height*0.85,200),flexShrink:0}}>
+          {slices.map((s,i)=><path key={i} d={s.path} fill={s.color} stroke="#fff" strokeWidth="1"/>)}
+          <circle cx={cx} cy={cy} r={inner-1} fill="#fff"/>
+          <text x={cx} y={cy+3} textAnchor="middle" style={{fontSize:8,fontWeight:700,fill:C.text,fontFamily:'Inter,sans-serif'}}>{total>=1000?`${(total/1000).toFixed(1)}k`:String(Math.round(total))}</text>
+
+        </svg>
+        <div style={{flex:1,overflow:'auto',display:'flex',flexDirection:'column',gap:5}}>
+          {slices.map((s,i)=>(
+            <div key={i} style={{display:'flex',alignItems:'center',gap:7}}>
+              <div style={{width:9,height:9,borderRadius:'50%',background:s.color,flexShrink:0}}/>
+              <span style={{fontSize:11.5,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{String(Object.values(s.row)[0])}</span>
+              <span style={{fontSize:11.5,fontWeight:600,color:C.text,fontFamily:"'JetBrains Mono',monospace"}}>{Math.round(s.pct*100)}%</span>
+            </div>
+          ))}
+        </div>
+      </div>
     )
   }
   if(viz==='kpi') return(
@@ -2378,18 +2195,21 @@ function KpiCard({kpi}:{kpi:any}) {
 const SNAP=20 // snap grid in px
 function snap(n:number){return Math.round(n/SNAP)*SNAP}
 
-function DashCard({view,onRemove,onEdit,onHeaderMouseDown}:{view:DashView,onRemove:()=>void,onEdit:()=>void,onHeaderMouseDown?:(e:React.MouseEvent)=>void}) {
+function DashCard({view,onRemove,onEdit,onDragStart,onDragEnd}:{view:DashView,onRemove:()=>void,onEdit:()=>void,onDragStart?:()=>void,onDragEnd?:()=>void}) {
   const [rows,setRows]=useState<any[]>(view.rows||[])
   const [fields,setFields]=useState<string[]>(view.fields||[])
   const [loading,setLoading]=useState(!view.rows?.length)
   const [menuOpen,setMenuOpen]=useState(false)
   const [sortCol,setSortCol]=useState<string|null>(null)
   const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc')
+  const [w,setW]=useState(view.w)
+  const [h,setH]=useState(view.h)
   const sortedRows=useMemo(()=>{
     if(!sortCol)return rows
     return [...rows].sort((a,b)=>{const cmp=String(a[sortCol]??'').localeCompare(String(b[sortCol]??''),undefined,{numeric:true});return sortDir==='asc'?cmp:-cmp})
   },[rows,sortCol,sortDir])
   const toggleSort=(col:string)=>{if(sortCol===col)setSortDir(d=>d==='asc'?'desc':'asc');else{setSortCol(col);setSortDir('asc')}}
+  const startRef=useRef<{mx:number,my:number,sw:number,sh:number}|null>(null)
 
   useEffect(()=>{
     if(view.rows?.length){setRows(view.rows);setFields(view.fields||[]);setLoading(false);return}
@@ -2405,15 +2225,37 @@ function DashCard({view,onRemove,onEdit,onHeaderMouseDown}:{view:DashView,onRemo
     return()=>document.removeEventListener('click',close)
   },[menuOpen])
 
-  const tableScale=1
+  const onCornerMouseDown=(e:React.MouseEvent)=>{
+    e.preventDefault()
+    e.stopPropagation()
+    startRef.current={mx:e.clientX,my:e.clientY,sw:w,sh:h}
+    const onMove=(ev:MouseEvent)=>{
+      ev.preventDefault()
+      if(!startRef.current)return
+      const newW=snap(Math.max(240,Math.min(1320,startRef.current.sw+(ev.clientX-startRef.current.mx))))
+      const newH=snap(Math.max(140,Math.min(800,startRef.current.sh+(ev.clientY-startRef.current.my))))
+      setW(newW)
+      setH(newH)
+    }
+    const onUp=()=>{
+      startRef.current=null
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
+  // For table viz: scale font/padding with card size
+  const tableScale=Math.max(0.8,Math.min(1.6,w/440))
 
   return(
-    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',width:'100%',height:'100%',boxSizing:'border-box',overflow:'hidden'}}>
-      {/* Header — drag handle */}
-      <div onMouseDown={onHeaderMouseDown} style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead,borderRadius:'10px 10px 0 0',flexShrink:0,cursor:'grab'}}>
+    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',width:w===9999?'100%':w,flexShrink:0,boxSizing:'border-box'}}>
+      {/* Header */}
+      <div draggable={!!onDragStart} onDragStart={onDragStart} onDragEnd={onDragEnd} style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead,borderRadius:'10px 10px 0 0',flexShrink:0,cursor:onDragStart?'grab':'default'}}>
         <span style={{fontSize:12.5,fontWeight:600,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{view.name}</span>
         <div style={{position:'relative'}}>
-          <button className="dash-no-drag" onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
+          <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
             style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,lineHeight:1,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1}}
             onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
           {menuOpen&&(
@@ -2428,8 +2270,8 @@ function DashCard({view,onRemove,onEdit,onHeaderMouseDown}:{view:DashView,onRemo
         </div>
       </div>
 
-      {/* Chart area — fills remaining height */}
-      <div style={{width:'100%',flex:1,overflow:'hidden',minHeight:0}}>
+      {/* Chart area — fills exact h, no padding eating height */}
+      <div style={{width:'100%',height:h,overflow:'hidden',flexShrink:0}}>
         {loading
           ?<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:C.textLight,fontSize:13}}>
             <div style={{width:14,height:14,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading…
@@ -2449,7 +2291,28 @@ function DashCard({view,onRemove,onEdit,onHeaderMouseDown}:{view:DashView,onRemo
                 </tbody>
               </table>
             </div>
-            :<ViewChart viz={view.viz} rows={rows} fields={fields} color={view.color||C.accent} height={'100%' as any}/>}
+            :<ViewChart viz={view.viz} rows={rows} fields={fields} color={view.color||C.accent} height={h}/>}
+      </div>
+
+      {/* Corner resize handle */}
+      <div
+        onMouseDown={onCornerMouseDown}
+        title="Drag to resize"
+        style={{
+          position:'absolute',bottom:0,right:0,
+          width:20,height:20,
+          cursor:'se-resize',
+          zIndex:10,
+          display:'flex',alignItems:'flex-end',justifyContent:'flex-end',
+          padding:'3px',
+          userSelect:'none',
+        }}>
+        {/* Three diagonal lines — classic resize indicator */}
+        <svg width="11" height="11" viewBox="0 0 11 11" style={{display:'block',opacity:.45}}>
+          <line x1="9" y1="1" x2="1" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+          <line x1="9" y1="5" x2="5" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+          <line x1="9" y1="9" x2="9" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
       </div>
     </div>
   )
@@ -2499,7 +2362,7 @@ const VIZ_TYPES:[DashView['viz'],string][]=[['bar','Bar'],['line','Line'],['stac
 
 function VisualBuilder({onSave,onClose,existing=null,tables=TABLES}:{onSave:(v:DashView)=>void,onClose:()=>void,existing?:DashView|null,tables?:any[]}) {
   // mode: 'visual' = click fields | 'sql' = paste SQL
-  const [mode,setMode]=useState<'visual'|'sql'|'ai'>(existing?'sql':'visual')
+  const [mode,setMode]=useState<'visual'|'sql'>(existing?'sql':'visual')
   const [name,setName]=useState(existing?.name||'')
   const [viz,setViz]=useState<DashView['viz']>(existing?.viz||'bar')
   const [xCol,setXCol]=useState<string>('')   // "table.col"
@@ -2595,8 +2458,6 @@ function VisualBuilder({onSave,onClose,existing=null,tables=TABLES}:{onSave:(v:D
       viz,
       w:existing?.w||480,
       h:existing?.h||280,
-      gw:existing?.gw||(viz==='kpi'?240:viz==='table'?900:380),
-      gh:existing?.gh||(viz==='kpi'?120:viz==='table'?300:260),
       rows:previewRows,
       fields:previewFields,
     })
@@ -2619,7 +2480,7 @@ function VisualBuilder({onSave,onClose,existing=null,tables=TABLES}:{onSave:(v:D
           {/* Mode toggle */}
           <div style={{display:'flex',gap:4}}>
             <button onClick={()=>setMode('visual')} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='visual'?C.accent:C.cardBorder}`,background:mode==='visual'?C.accentBg:'#fff',color:mode==='visual'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>Fields</button>
-            <button onClick={()=>setMode('ai')} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='ai'?C.accent:C.cardBorder}`,background:mode==='ai'?C.accentBg:'#fff',color:mode==='ai'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>✨ AI</button>
+            <button onClick={()=>setMode('ai' as any)} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='ai'?C.accent:C.cardBorder}`,background:mode==='ai'?C.accentBg:'#fff',color:mode==='ai'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>✨ AI</button>
             <button onClick={()=>setMode('sql')} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='sql'?C.accent:C.cardBorder}`,background:mode==='sql'?C.accentBg:'#fff',color:mode==='sql'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>SQL</button>
           </div>
           <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:C.textLight,cursor:'pointer',lineHeight:1,padding:'0 2px'}}>×</button>
@@ -2855,10 +2716,6 @@ function DashboardTab({sharedResults,onResultSaved,isCompanyUser=false,hasDb=fal
           viz:v.viz||v.viz_type||'bar',
           w:Number(v.w||v.card_width||480),
           h:Number(v.h||v.card_height||280),
-          gw:v.gw!=null?Number(v.gw):undefined,
-          gh:v.gh!=null?Number(v.gh):undefined,
-          gx:v.gx!=null?Number(v.gx):undefined,
-          gy:v.gy!=null?Number(v.gy):undefined,
           rows:v.rows||v.rows_cache||[],
           fields:v.fields||v.fields_cache||[],
         })
@@ -2872,6 +2729,7 @@ function DashboardTab({sharedResults,onResultSaved,isCompanyUser=false,hasDb=fal
   const [unsaved,setUnsaved]=useState(false)
   const [saving,setSaving]=useState(false)
 
+  // Mark unsaved when views/pages change after initial load
   useEffect(()=>{
     if(!dashLoaded)return
     if(firstLoad.current){firstLoad.current=false;return}
@@ -2929,8 +2787,6 @@ function DashboardTab({sharedResults,onResultSaved,isCompanyUser=false,hasDb=fal
   }
 
   const deletePage=(id:string)=>{
-    const pg=pages.find(p=>p.id===id)
-    if(!window.confirm(`Delete "${pg?.name||'this page'}"? All visuals on it will be removed.`))return
     setPages(p=>p.filter(pg=>pg.id!==id))
     if(activePage===id)setActivePage('overview')
   }
@@ -3138,6 +2994,22 @@ return (
                 <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:24,maxWidth:360}}>Connect your database and your KPIs, charts, and tables will live here — built from your real data.</div>
                 <button onClick={()=>onConnect&&onConnect()} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'11px 26px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Connect database →</button>
               </div>
+            )}
+            {/* Hardcoded presets removed — dashboard visuals built by admin and saved */}
+            {false&&(
+              <>
+                <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
+                  {PRESET_KPIS.map(kpi=><KpiCard key={kpi.id} kpi={kpi}/>)}
+                </div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:14,marginBottom:14}}>
+                  {PRESET_QUERIES.slice(0,3).map(p=>(
+                    <PresetCard key={p.id} preset={p} onEdit={()=>openBuilder({id:p.id,name:p.name,sql:p.sql,viz:p.viz as any,w:p.w,h:p.h})}/>
+                  ))}
+                </div>
+                <div style={{marginBottom:customViews.length?20:0, maxWidth:1350}}>
+                  <PresetCard key={PRESET_QUERIES[3].id} preset={PRESET_QUERIES[3]} onEdit={()=>openBuilder({id:PRESET_QUERIES[3].id,name:PRESET_QUERIES[3].name,sql:PRESET_QUERIES[3].sql,viz:PRESET_QUERIES[3].viz as any,w:PRESET_QUERIES[3].w,h:PRESET_QUERIES[3].h})}/>
+                </div>
+              </>
             )}
             {/* Company user with DB — show their custom visuals or empty prompt */}
             {isCompanyUser&&hasDb&&customViews.length===0&&(
@@ -3959,10 +3831,10 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour,hasDb=false,currentUse
   const [inviteRole,setInviteRole]=useState('Viewer')
   const [showInvite,setShowInvite]=useState(false)
 
-  const PLAN_LIMITS_MAP:Record<string,{queries:number,seats:number,dbs:number,resetDate:string}>={
-    starter:{queries:500,seats:5,dbs:1,resetDate:'monthly'},
-    growth:{queries:2000,seats:17,dbs:3,resetDate:'monthly'},
-    scale:{queries:10000,seats:20,dbs:10,resetDate:'monthly'},
+  const PLAN_LIMITS_MAP:Record<string,{queries:number,seats:number,dbs:number}>={
+    starter:{queries:500,seats:5,dbs:1},
+    growth:{queries:2000,seats:17,dbs:3},
+    scale:{queries:10000,seats:20,dbs:10},
   }
   const plan=(currentUser?.plan||'starter').toLowerCase()
   const PLAN_LIMITS=PLAN_LIMITS_MAP[plan]||PLAN_LIMITS_MAP.starter
@@ -4472,7 +4344,7 @@ export default function Dashboard() {
             )}
           </div>
           {tab==='builder'&&<BuilderTab isCompanyUser={isCompanyUser} hasDb={hasDb} onConnect={()=>setShowConnectPrompt(true)} tables={activeTables}/>}
-          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult} isCompanyUser={isCompanyUser} hasDb={hasDb} onConnect={()=>setShowConnectPrompt(true)} activeTables={activeTables} userRole={currentUser?.role||'admin'} currentUser={currentUser}/>}
+          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult} isCompanyUser={isCompanyUser} hasDb={hasDb} onConnect={()=>setShowConnectPrompt(true)} activeTables={activeTables} userRole={currentUser?.role||'viewer'} currentUser={currentUser}/>}
           {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})} isCompanyUser={isCompanyUser} hasDb={hasDb} companyName={currentUser?.companyName||''} tables={activeTables}/>}
           {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult} currentUser={currentUser} hasDb={hasDb}/></div>}
           {tab==='admin'&&(
