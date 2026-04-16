@@ -3,6 +3,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, CartesianGrid, Legend } from 'recharts'
 
+
 const C = {
   navBg:'#022c22', navBorder:'#064e3b', navText:'#6ee7b7', navActive:'#10b981',
   bg:'#F6F9FC', sidebar:'#FFFFFF', sidebarBorder:'#E3EAF2',
@@ -454,44 +455,144 @@ function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:numb
 }
 
 // ── Relationships Diagram ─────────────────────────────────────────────────────
-function RelationshipsDiagram({onTableClick,onTableContext}:{onTableClick:(t:any)=>void,onTableContext?:(t:any,x:number,y:number)=>void}) {
+function RelationshipsDiagram({onTableClick,onTableContext,tables=TABLES}:{onTableClick:(t:any)=>void,onTableContext?:(t:any,x:number,y:number)=>void,tables?:any[]}) {
   const [hov,setHov]=useState<string|null>(null)
   const [hovEdge,setHovEdge]=useState<string|null>(null)
   const [tooltip,setTooltip]=useState<{x:number,y:number,label:string}|null>(null)
-  const edges=TABLES.flatMap(t=>t.joins.map(j=>({from:t.name,to:j.to,on:j.on,key:`${t.name}-${j.to}`}))).filter((e,i,arr)=>arr.findIndex(x=>(x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from))===i)
-  const pos=(name:string)=>TABLES.find(t=>t.name===name)||{x:0,y:0,color:C.accent}
+  const BW=148, BH=52
+
+  // BFS radial layout: most-connected table at centre, rings outward
+  const {positions,svgW,svgH}=useMemo(()=>{
+    const n=tables.length
+    if(!n) return {positions:{} as Record<string,{x:number,y:number}>,svgW:700,svgH:420}
+    // Build undirected adjacency
+    const adj:Record<string,Set<string>>={}
+    tables.forEach(t=>{
+      if(!adj[t.name])adj[t.name]=new Set()
+      t.joins?.forEach((j:any)=>{
+        adj[t.name].add(j.to)
+        if(!adj[j.to])adj[j.to]=new Set()
+        adj[j.to].add(t.name)
+      })
+    })
+    // Pick most-connected as root; BFS outward
+    const sorted=[...tables].sort((a,b)=>(adj[b.name]?.size||0)-(adj[a.name]?.size||0))
+    const levels:Record<number,string[]>={0:[sorted[0].name]}
+    const placed=new Set([sorted[0].name])
+    const q=[{name:sorted[0].name,lv:0}];let qi=0
+    while(qi<q.length){
+      const {name,lv}=q[qi++]
+      for(const nb of Array.from(adj[name]||new Set<string>())){
+        if(!placed.has(nb)){placed.add(nb);if(!levels[lv+1])levels[lv+1]=[];levels[lv+1].push(nb);q.push({name:nb,lv:lv+1})}
+      }
+    }
+    // Isolated tables go in an extra ring
+    tables.forEach(t=>{if(!placed.has(t.name)){const ml=Math.max(...Object.keys(levels).map(Number))+1;if(!levels[ml])levels[ml]=[];levels[ml].push(t.name)}})
+    // Compute SVG size from rings
+    const numLevels=Math.max(...Object.keys(levels).map(Number))
+    const RING=200 // px between rings
+    const R=numLevels*RING+160
+    const svgW=Math.max(700,R*2+BW+40)
+    const svgH=Math.max(420,R*2+BH+40)
+    const cx=svgW/2,cy=svgH/2
+    // Assign positions
+    const positions:Record<string,{x:number,y:number}>={}
+    Object.entries(levels).forEach(([lvStr,names])=>{
+      const lv=parseInt(lvStr)
+      if(lv===0){positions[names[0]]={x:cx-BW/2,y:cy-BH/2};return}
+      const r=lv*RING
+      const startAngle=-Math.PI/2 // top
+      names.forEach((name,i)=>{
+        const a=startAngle+(2*Math.PI*i/names.length)
+        positions[name]={x:cx+r*Math.cos(a)-BW/2,y:cy+r*Math.sin(a)-BH/2}
+      })
+    })
+    return {positions,svgW,svgH}
+  },[tables])
+
+  // Deduplicated edges
+  const edges=tables.flatMap(t=>(t.joins||[]).map((j:any)=>({from:t.name,to:j.to,on:j.on,key:`${t.name}~~${j.to}`}))).filter((e,i,arr)=>arr.findIndex(x=>(x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from))===i)
+
+  // Exit point from a box toward a target centre, plus bezier control point
+  const edgePath=(fromName:string,toName:string)=>{
+    const fp=positions[fromName],tp=positions[toName]
+    if(!fp||!tp) return ''
+    const fcx=fp.x+BW/2,fcy=fp.y+BH/2,tcx=tp.x+BW/2,tcy=tp.y+BH/2
+    const dx=tcx-fcx,dy=tcy-fcy,dist=Math.sqrt(dx*dx+dy*dy)||1
+    const exit=(bx:number,by:number,tdx:number,tdy:number)=>{
+      if(Math.abs(tdx)*BH>Math.abs(tdy)*BW) return {x:bx+(tdx>0?BW:0),y:by+BH/2}
+      return {x:bx+BW/2,y:by+(tdy>0?BH:0)}
+    }
+    const p1=exit(fp.x,fp.y,dx,dy),p2=exit(tp.x,tp.y,-dx,-dy)
+    const bend=Math.min(dist*0.35,110)
+    const nx=dx/dist,ny=dy/dist
+    return `M${p1.x},${p1.y} C${p1.x+nx*bend},${p1.y+ny*bend} ${p2.x-nx*bend},${p2.y-ny*bend} ${p2.x},${p2.y}`
+  }
+
   return(
     <div style={{padding:24,position:'relative'}}>
       <h2 style={{fontSize:17,fontWeight:600,color:C.text,marginBottom:2,letterSpacing:'-0.3px'}}>Table Relationships</h2>
       <p style={{fontSize:12.5,color:C.textMuted,marginBottom:16}}>Click a table to inspect · Hover a connection to see the join condition</p>
       {tooltip&&<div style={{position:'fixed',left:tooltip.x+14,top:tooltip.y-38,background:'#1B2432',color:'#fff',fontFamily:"'JetBrains Mono'",fontSize:12,fontWeight:500,padding:'6px 12px',borderRadius:6,pointerEvents:'none',zIndex:9999,whiteSpace:'nowrap',boxShadow:'0 4px 12px rgba(0,0,0,0.3)'}}>{tooltip.label}</div>}
-      <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
-        <svg width="100%" viewBox="0 0 860 480" style={{display:'block',overflow:'visible'}}>
-          <defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#F1F5F9" strokeWidth="1"/></pattern></defs>
-          <rect width="860" height="480" fill="url(#grid)" rx="6"/>
+      <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,0.04)',overflowX:'auto'}}>
+        <svg width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`} style={{display:'block',minWidth:'100%'}}>
+          <defs>
+            <pattern id="rdgrid" width="32" height="32" patternUnits="userSpaceOnUse">
+              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#F1F5F9" strokeWidth="1"/>
+            </pattern>
+            <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L6,3 z" fill="#CBD5E1"/>
+            </marker>
+            <marker id="arrH" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L6,3 z" fill={C.accent}/>
+            </marker>
+          </defs>
+          <rect width={svgW} height={svgH} fill="url(#rdgrid)" rx="8"/>
           {edges.map(e=>{
-            const f=pos(e.from),t=pos(e.to),isH=hovEdge===e.key
-            return(<g key={e.key}>
-              <line x1={f.x+62} y1={f.y+22} x2={t.x+62} y2={t.y+22} stroke={isH?C.accent:'#CBD5E1'} strokeWidth={isH?2:1.5} strokeDasharray={isH?'none':'6,3'} style={{pointerEvents:'none'}}/>
-              <line x1={f.x+62} y1={f.y+22} x2={t.x+62} y2={t.y+22} stroke="transparent" strokeWidth={22} style={{cursor:'pointer'}}
-                onMouseEnter={ev=>{setHovEdge(e.key);setTooltip({x:ev.clientX,y:ev.clientY,label:`${e.from} — ${e.to}  ·  ON ${e.on}`})}}
+            const d=edgePath(e.from,e.to)
+            const isH=hovEdge===e.key
+            return d?(<g key={e.key}>
+              <path d={d} stroke={isH?C.accent:'#CBD5E1'} strokeWidth={isH?2:1.5} fill="none"
+                strokeDasharray={isH?undefined:'5,3'}
+                markerEnd={isH?'url(#arrH)':'url(#arr)'}
+                style={{pointerEvents:'none'}}/>
+              <path d={d} stroke="transparent" strokeWidth={20} fill="none" style={{cursor:'pointer'}}
+                onMouseEnter={ev=>{setHovEdge(e.key);setTooltip({x:ev.clientX,y:ev.clientY,label:`${e.from} → ${e.to}  ·  ${e.on}`})}}
                 onMouseMove={ev=>setTooltip(p=>p?{...p,x:ev.clientX,y:ev.clientY}:null)}
                 onMouseLeave={()=>{setHovEdge(null);setTooltip(null)}}/>
-            </g>)
+            </g>):null
           })}
-          {TABLES.map(t=>{const isH=hov===t.name;return(
-            <g key={t.name} style={{cursor:'pointer'}} onMouseEnter={()=>setHov(t.name)} onMouseLeave={()=>setHov(null)} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
-
-              <rect x={t.x} y={t.y} width={125} height={44} rx={6} fill={isH?t.color:'#fff'} stroke={isH?t.color:C.cardBorder} strokeWidth={isH?1.5:1}/>
-              <text x={t.x+62} y={t.y+17} textAnchor="middle" style={{fontSize:11.5,fontFamily:"'JetBrains Mono'",fontWeight:600,fill:isH?'#fff':C.text}}>{t.name}</text>
-              <text x={t.x+62} y={t.y+32} textAnchor="middle" style={{fontSize:9.5,fontFamily:'Inter,sans-serif',fill:isH?'rgba(255,255,255,0.75)':C.textLight}}>{t.rows} rows</text>
-            </g>
-          )})}
+          {tables.map(t=>{
+            const p=positions[t.name];if(!p)return null
+            const isH=hov===t.name
+            const deg=tables.findIndex(x=>x.name===t.name)
+            return(
+              <g key={t.name} style={{cursor:'pointer'}}
+                onMouseEnter={()=>setHov(t.name)} onMouseLeave={()=>setHov(null)}
+                onClick={()=>onTableClick(t)}
+                onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
+                <rect x={p.x} y={p.y} width={BW} height={BH} rx={8}
+                  fill={isH?t.color:'#fff'}
+                  stroke={isH?t.color:C.cardBorder}
+                  strokeWidth={isH?2:1}
+                  style={{filter:isH?`drop-shadow(0 2px 8px ${t.color}55)`:'drop-shadow(0 1px 3px rgba(0,0,0,0.07))'}}/>
+                {/* colour dot */}
+                <circle cx={p.x+14} cy={p.y+BH/2} r={4} fill={isH?'rgba(255,255,255,0.7)':t.color}/>
+                <text x={p.x+26} y={p.y+20} style={{fontSize:12,fontFamily:"'JetBrains Mono'",fontWeight:700,fill:isH?'#fff':C.text,userSelect:'none'}}>{t.name}</text>
+                <text x={p.x+26} y={p.y+35} style={{fontSize:9.5,fontFamily:'Inter,sans-serif',fill:isH?'rgba(255,255,255,0.72)':C.textLight,userSelect:'none'}}>{Number(t.rows||0).toLocaleString()} rows</text>
+              </g>
+            )
+          })}
         </svg>
         <div style={{display:'flex',gap:12,flexWrap:'wrap',borderTop:`1px solid ${C.cardBorder}`,paddingTop:12,marginTop:8}}>
-          {TABLES.map(t=><div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
-            <div style={{width:7,height:7,borderRadius:'50%',background:t.color}}/><span style={{fontSize:11.5,color:C.textMuted,fontFamily:"'JetBrains Mono'"}}>{t.name}</span>
-          </div>)}
+          {tables.map(t=>(
+            <div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}}
+              onClick={()=>onTableClick(t)}
+              onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
+              <div style={{width:7,height:7,borderRadius:'50%',background:t.color}}/>
+              <span style={{fontSize:11.5,color:C.textMuted,fontFamily:"'JetBrains Mono'"}}>{t.name}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -565,13 +666,13 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
   // Load saved conversations after mount
   useEffect(()=>{
     try{
-      const saved=sessionStorage.getItem('qwezy_convs')
+      const saved=localStorage.getItem('qwezy_convs')
       if(saved){
         const parsed=JSON.parse(saved)
         const convs=parsed.map((c:any)=>({...c,createdAt:new Date(c.createdAt),updatedAt:new Date(c.updatedAt),messages:c.messages.map((m:any)=>({...m,timestamp:new Date(m.timestamp)}))}))
         setConversations(convs)
       }
-      const savedId=sessionStorage.getItem('qwezy_active_id')
+      const savedId=localStorage.getItem('qwezy_active_id')
       if(savedId)setActiveId(savedId)
     }catch{}
   },[])
@@ -597,8 +698,8 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
   // Persist to sessionStorage
   useEffect(()=>{
     try {
-      sessionStorage.setItem('qwezy_convs',JSON.stringify(conversations))
-      sessionStorage.setItem('qwezy_active_id',activeId)
+      localStorage.setItem('qwezy_convs',JSON.stringify(conversations))
+      localStorage.setItem('qwezy_active_id',activeId)
     } catch {}
   },[conversations,activeId])
 
@@ -676,12 +777,6 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
       if(!res.ok){
         const errMsg:ConvMessage={id:`m${Date.now()}`,role:'assistant',content:data.error||'Query failed',timestamp:new Date()}
         setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,errMsg],updatedAt:new Date()}:c))
-        return
-      }
-
-      if(data.answer){
-        const textMsg:ConvMessage={id:`m${Date.now()}a`,role:'assistant',content:data.answer,confidence:data.confidence,assumptions:data.assumptions,timestamp:new Date()}
-        setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,textMsg],updatedAt:new Date()}:c))
         return
       }
 
@@ -878,8 +973,8 @@ function buildSQL(
   // Find joins
   const joins: string[] = []
   tables.slice(1).forEach(tbl => {
-    const tblDef = TABLES.find(t=>t.name===tbl)
-    const primaryDef = TABLES.find(t=>t.name===primaryTable)
+    const tblDef = (window as any).__qwezyTables?.find((t:any)=>t.name===tbl) || TABLES.find(t=>t.name===tbl)
+    const primaryDef = (window as any).__qwezyTables?.find((t:any)=>t.name===primaryTable) || TABLES.find(t=>t.name===primaryTable)
     // Check if primary joins to this table
     const j1 = primaryDef?.joins.find(j=>j.to===tbl)
     if(j1) {
@@ -915,8 +1010,9 @@ function buildSQL(
   return `SELECT\n  ${selectCols}\nFROM ${fromClause}${joinClause}${whereClause}${groupByClause}${orderByClause}${limitClause}`
 }
 
-function BuilderTab() {
+function BuilderTab({isCompanyUser=false,hasDb=false,onConnect,tables=TABLES}:{isCompanyUser?:boolean,hasDb?:boolean,onConnect?:()=>void,tables?:any[]}) {
   const [colSearch,setColSearch]=useState('')
+  const [expandedTables,setExpandedTables]=useState<Set<string>>(new Set())
   const [selCols,setSelCols]=useState<BuilderCol[]>([])
   const [groupBys,setGroupBys]=useState<BuilderCol[]>([])
   const [orderBys,setOrderBys]=useState<BuilderOrderBy[]>([])
@@ -1020,15 +1116,23 @@ function BuilderTab() {
           <div style={{fontSize:9.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Drag or click to add</div>
           <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="Search columns…"
             style={{width:'100%',padding:'4px 8px',borderRadius:5,border:`1px solid ${C.sidebarBorder}`,fontSize:12,color:C.text,background:C.bg,fontFamily:'Inter,sans-serif'}}/>
+          {isCompanyUser&&!hasDb&&<div style={{padding:'20px 12px',textAlign:'center'}}><div style={{fontSize:13,color:C.textMuted,lineHeight:1.6,marginBottom:10}}>No database connected yet</div><button onClick={()=>onConnect&&onConnect()} style={{fontSize:12,padding:'5px 12px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>Connect →</button></div>}
         </div>
         <div style={{flex:1,overflowY:'auto',padding:'5px 7px'}}>
-          {TABLES.map(tbl=>{
+          {(isCompanyUser&&!hasDb?[]:tables).map(tbl=>{
             const tblCols=builderCols.filter(c=>c.table===tbl.name)
             if(tblCols.length===0) return null
+            const isExpanded=expandedTables.has(tbl.name)||colSearch.trim().length>0
+            const toggleTable=()=>setExpandedTables(p=>{const n=new Set(p);n.has(tbl.name)?n.delete(tbl.name):n.add(tbl.name);return n})
             return(
-              <div key={tbl.name} style={{marginBottom:8}}>
-                <div style={{fontSize:9.5,fontWeight:700,color:tbl.color,textTransform:'uppercase',letterSpacing:'0.06em',padding:'4px 6px',marginBottom:2}}>{tbl.name}</div>
-                {tblCols.map((col,i)=>{
+              <div key={tbl.name} style={{marginBottom:4}}>
+                <div onClick={toggleTable} style={{display:'flex',alignItems:'center',gap:5,fontSize:9.5,fontWeight:700,color:tbl.color,textTransform:'uppercase',letterSpacing:'0.06em',padding:'5px 6px',marginBottom:1,cursor:'pointer',borderRadius:5,userSelect:'none',background:isExpanded?`${tbl.color}10`:'transparent'}}
+                  onMouseOver={e=>e.currentTarget.style.background=`${tbl.color}18`} onMouseOut={e=>e.currentTarget.style.background=isExpanded?`${tbl.color}10`:'transparent'}>
+                  <span style={{fontSize:9,transition:'transform .15s',display:'inline-block',transform:isExpanded?'rotate(90deg)':'rotate(0deg)'}}>▶</span>
+                  {tbl.name}
+                  <span style={{marginLeft:'auto',fontSize:9,fontWeight:400,color:C.textLight,textTransform:'none'}}>{tblCols.length} cols</span>
+                </div>
+                {isExpanded&&tblCols.map((col,i)=>{
                   const selected=!!selCols.find(c=>c.n===col.n&&c.table===col.table)
                   return(
                     <div key={i}
@@ -1423,8 +1527,44 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
 }
 
 // ── Reports Tab ───────────────────────────────────────────────────────────────
-function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,result:ReportResult)=>void}) {
-  const [reports,setReports]=useState(INITIAL_REPORTS as any[])
+function ReportsTab({sharedResults,onResultSaved,currentUser,hasDb=false}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,result:ReportResult)=>void,currentUser?:{id:string,company_id:string,role:string},hasDb?:boolean}) {
+  const [reports,setReports]=useState<any[]>([])
+  const [reportsLoading,setReportsLoading]=useState(true)
+
+  // Load reports from Supabase on mount
+  // Load reports from DB on mount
+  useEffect(()=>{
+    const load=async()=>{
+      try{
+        const res=await fetch('/api/reports')
+        if(res.ok){
+          const d=await res.json()
+          if(d.reports&&d.reports.length>0){
+            // Normalize DB column names to UI field names
+            const normalized=d.reports.map((r:any)=>({
+              ...r,
+              group: r.group_name||r.group||'General',
+              refreshHours: r.refresh_hours||r.refreshHours||168,
+              rows: r.row_count||r.rows||0,
+              lastRun: r.last_run?new Date(r.last_run).toLocaleDateString():r.lastRun||'Never',
+              shared: r.shared??false,
+            }))
+            setReports(normalized)
+          } else {
+            // No reports in DB — only show examples for Northwind demo (has orders+customers+products)
+            // Real company users get empty state
+            setReports([])
+          }
+        } else {
+          setReports([])
+        }
+      }catch{
+        setReports([])
+      }
+      finally{setReportsLoading(false)}
+    }
+    load()
+  },[])
   const [showNew,setShowNew]=useState(false)
   const [running,setRunning]=useState<string|null>(null)
   const [expanded,setExpanded]=useState<string|null>(null)
@@ -1461,10 +1601,21 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
     const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`${name}.csv`;a.click()
   }
 
-  const addReport=()=>{
+  const addReport=async()=>{
     if(!newReport.name||!newReport.sql) return
-    const id=`r${Date.now()}`
-    setReports((p:any[])=>[...p,{...newReport,id,owner:'Me',lastRun:'Never',rows:0}])
+    const id=crypto?.randomUUID?.()||`r${Date.now()}-${Math.random().toString(36).slice(2)}`
+    // Save to DB
+    const saveRes=await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      name:newReport.name,description:newReport.description,sql:newReport.sql,
+      schedule:newReport.schedule,refreshHours:newReport.refreshHours,
+      shared:newReport.shared,group:newReport.group,
+    })})
+    if(saveRes.ok){
+      const saved=await saveRes.json()
+      setReports((p:any[])=>[...p,{...newReport,id:saved.id||id,owner:'Me',lastRun:'Never',rows:0}])
+    } else {
+      setReports((p:any[])=>[...p,{...newReport,id,owner:'Me',lastRun:'Never',rows:0}])
+    }
     setNewReport({name:'',description:'',sql:'',schedule:'weekly',refreshHours:168,shared:true,group:'Finance'})
     setShowNew(false)
   }
@@ -1474,7 +1625,7 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
     <div style={{flex:1,overflowY:'auto',padding:'16px 20px'}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
         <div>
-          <h2 style={{fontSize:17,fontWeight:700,color:C.text,marginBottom:2}}>Reports</h2>
+          <h2 style={{fontSize:17,fontWeight:700,color:C.text,marginBottom:2}}>{reportsLoading?'Loading reports…':'Reports'}</h2>
           <p style={{fontSize:12.5,color:C.textMuted}}>Saved queries with scheduled delivery</p>
         </div>
         <button onClick={()=>setShowNew(s=>!s)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'8px 16px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>+ New report</button>
@@ -1503,7 +1654,16 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
             <SQLEditor value={newReport.sql} onChange={v=>setNewReport(p=>({...p,sql:v}))} height={80}/>
           </div>
           <div style={{display:'flex',gap:7}}>
-            <button onClick={addReport} style={{background:C.accent,color:'#fff',border:'none',borderRadius:6,padding:'7px 16px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save report</button>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <button onClick={addReport} style={{background:C.accent,color:'#fff',border:'none',borderRadius:6,padding:'7px 16px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save report</button>
+              <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',background:'#F8FAFD',borderRadius:6,border:`1px solid ${C.cardBorder}`}}>
+                <button onClick={()=>setNewReport(p=>({...p,shared:!p.shared}))}
+                  style={{width:30,height:16,borderRadius:8,border:'none',cursor:'pointer',background:newReport.shared?C.accent:'#CBD5E1',position:'relative',flexShrink:0}}>
+                  <div style={{width:10,height:10,borderRadius:'50%',background:'#fff',position:'absolute',top:3,left:newReport.shared?17:3,transition:'left .15s'}}/>
+                </button>
+                <span style={{fontSize:12.5,color:C.textMuted}}>{newReport.shared?'Shared with team':'Only visible to me'}</span>
+              </div>
+            </div>
             <button onClick={()=>setShowNew(false)} style={{background:'#F0F4F8',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:6,padding:'7px 12px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
           </div>
         </div>
@@ -1586,7 +1746,7 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
                                 ⚡ BI Connect
                               </button>
                               <div style={{height:1,background:C.cardBorder,margin:'3px 0'}}/>
-                              <button onClick={()=>{setReports((p:any[])=>p.filter(r=>r.id!==report.id));setMenuOpen(null)}}
+                              <button onClick={async()=>{await fetch('/api/reports',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:report.id})});setReports((p:any[])=>p.filter(r=>r.id!==report.id));setMenuOpen(null)}}
                                 style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
                                 onMouseOver={e=>e.currentTarget.style.background='#FEF2F2'} onMouseOut={e=>e.currentTarget.style.background='none'}>
                                 🗑 Delete report
@@ -1634,10 +1794,10 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
     }
 
 // ── Explorer Tab ──────────────────────────────────────────────────────────────
-function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void,onInfoPanel:(t:any,x:number,y:number)=>void}) {
+function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel,isCompanyUser=false,hasDb=false,companyName='',tables=TABLES}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void,onInfoPanel:(t:any,x:number,y:number)=>void,isCompanyUser?:boolean,hasDb?:boolean,companyName?:string,tables?:any[]}) {
   const [explorerView,setExplorerView]=useState<'tables'|'schema'>('tables')
   const [search,setSearch]=useState('')
-  const filtered=search?TABLES.filter(t=>t.name.includes(search.toLowerCase())||t.columns.some(c=>c.n.includes(search.toLowerCase()))):TABLES
+  const filtered=search?tables.filter((t:any)=>t.name.includes(search.toLowerCase())||t.columns?.some((col:any)=>col.n.includes(search.toLowerCase()))):tables
   return(
     <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
       {/* Sub-tab bar */}
@@ -1649,15 +1809,23 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:
           </button>
         ))}
       </div>
-      {explorerView==='schema'&&<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram onTableClick={t=>setDrawerTable(t)} onTableContext={(t,x,y)=>onInfoPanel(t,x,y)}/></div>}
+      {explorerView==='schema'&&(
+        isCompanyUser&&!hasDb
+          ?<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'80px 20px',textAlign:'center'}}>
+            <div style={{fontSize:44,marginBottom:16}}>🗺️</div>
+            <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:8}}>No schema yet</div>
+            <div style={{fontSize:13,color:C.textMuted,lineHeight:1.65,maxWidth:340}}>Connect your database to visualise your table relationships.</div>
+           </div>
+          :<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram tables={tables} onTableClick={t=>setDrawerTable(t)} onTableContext={(t,x,y)=>onInfoPanel(t,x,y)}/></div>
+      )}
       {explorerView==='tables'&&<div style={{padding:'20px 24px',overflowY:'auto',flex:1}}>
       <div style={{display:'flex',gap:12,marginBottom:18,flexWrap:'wrap',alignItems:'flex-end'}}>
         <div>
           <h2 style={{fontSize:18,fontWeight:700,color:C.text,letterSpacing:'-0.3px',marginBottom:2}}>Database Explorer</h2>
-          <p style={{fontSize:12.5,color:C.textMuted}}>Northwind · Right-click any table for options</p>
+          <p style={{fontSize:12.5,color:C.textMuted}}>{isCompanyUser?(companyName||'Your database'):('Northwind')} · Right-click any table for options</p>
         </div>
         <div style={{marginLeft:'auto',display:'flex',gap:10,alignItems:'center'}}>
-          {[['Tables',String(TABLES.length)],['Columns',String(ALL_COLS.length)],['Rows',TABLES.reduce((s,t)=>s+parseInt(t.rows.replace(/,/g,''),10),0).toLocaleString()]].map(([k,v])=>(
+          {(!isCompanyUser||hasDb)&&[['Tables',String(tables.length)],['Columns',String(tables.reduce((s:number,t:any)=>s+t.columns.length,0))],['Rows',tables.reduce((s:number,t:any)=>s+(typeof t.rows==='number'?t.rows:parseInt(String(t.rows||0))||0),0).toLocaleString()]].map(([k,v])=>(
             <div key={k} style={{background:'#fff',borderRadius:7,border:`1px solid ${C.cardBorder}`,padding:'5px 12px',textAlign:'center'}}>
               <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em'}}>{k}</div>
               <div style={{fontSize:15,fontWeight:700,color:C.text}}>{v}</div>
@@ -1668,7 +1836,14 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:
             onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
         </div>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(310px,1fr))',gap:12}}>
+      {isCompanyUser&&!hasDb&&(
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'80px 20px',textAlign:'center'}}>
+          <div style={{fontSize:44,marginBottom:16}}>🔍</div>
+          <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:8}}>No database connected</div>
+          <div style={{fontSize:13,color:C.textMuted,lineHeight:1.65,maxWidth:340,marginBottom:24}}>Connect your database to explore your tables, columns, and relationships.</div>
+        </div>
+      )}
+      {(!isCompanyUser||hasDb)&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(310px,1fr))',gap:12}}>
         {filtered.map(tbl=>(
           <div key={tbl.name}
             style={{background:'#fff',borderRadius:9,border:`1px solid ${C.cardBorder}`,cursor:'pointer',overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}
@@ -1681,7 +1856,7 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:
             <div style={{padding:'11px 14px'}}>
               <p style={{fontSize:12.5,color:C.textMuted,marginBottom:9,lineHeight:1.5}}>{tbl.desc}</p>
               <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:9}}>
-                {tbl.teams.map(t=><span key={t} style={{background:C.accentBg,border:`1px solid ${C.accent}22`,color:C.accent,fontSize:10.5,fontWeight:500,padding:'2px 7px',borderRadius:4}}>{t}</span>)}
+                {(Array.isArray(tbl.teams)?tbl.teams:tbl.team?[tbl.team]:[]).map((t:string)=><span key={t} style={{background:C.accentBg,border:`1px solid ${C.accent}22`,color:C.accent,fontSize:10.5,fontWeight:500,padding:'2px 7px',borderRadius:4}}>{t}</span>)}
               </div>
               <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
                 {tbl.columns.map(c=>(
@@ -1694,7 +1869,7 @@ function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:
             </div>
           </div>
         ))}
-      </div>
+      </div>}
       </div>}
     </div>
   )
@@ -1834,8 +2009,8 @@ function AlertCard({alert}:{alert:AlertDef}) {
   )
 }
 
-function AlertsTab() {
-  const [alerts,setAlerts]=useState<AlertDef[]>(DEFAULT_ALERTS)
+function AlertsTab({isCompanyUser=false,hasDb=false,userRole='viewer'}:{isCompanyUser?:boolean,hasDb?:boolean,userRole?:string}) {
+  const [alerts,setAlerts]=useState<AlertDef[]>(hasDb?DEFAULT_ALERTS:[])
   const [showAdd,setShowAdd]=useState(false)
   const [newAlert,setNewAlert]=useState({name:'',description:'',sql:'',severity:'warning' as 'warning'|'critical'})
 
@@ -1846,6 +2021,14 @@ function AlertsTab() {
     setShowAdd(false)
   }
 
+  if(isCompanyUser&&!hasDb) return(
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',paddingTop:80,textAlign:'center'}}>
+      <div style={{fontSize:44,marginBottom:16}}>🔔</div>
+      <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:8,letterSpacing:'-0.2px'}}>No alerts yet</div>
+      <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:24,maxWidth:360}}>Connect your database first, then set up alerts that monitor your live data.</div>
+    </div>
+  )
+
   return(
     <div>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
@@ -1854,8 +2037,8 @@ function AlertsTab() {
           <div style={{fontSize:12.5,color:C.textMuted}}>Conditions that run against your live data. Red or yellow means something needs attention.</div>
         </div>
         <div style={{marginLeft:'auto'}}>
-          <button onClick={()=>setShowAdd(s=>!s)}
-            style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
+          {(userRole==='admin'||userRole==='analyst')&&<button onClick={()=>setShowAdd(s=>!s)}
+            style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>}
         </div>
       </div>
 
@@ -1901,13 +2084,111 @@ function AlertsTab() {
   )
 }
 
-// ── Dashboard Tab ─────────────────────────────────────────────────────────────
-const PRESET_QUERIES = [
-  { id:'d1', name:'Revenue by Category', sql:`SELECT c.category_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM order_details od JOIN products p ON od.product_id=p.product_id JOIN categories c ON p.category_id=c.category_id GROUP BY c.category_name ORDER BY revenue DESC`, viz:'bar', w:460, h:260 },
-  { id:'d2', name:'Top 10 Customers', sql:`SELECT c.company_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM customers c JOIN orders o ON c.customer_id=o.customer_id JOIN order_details od ON o.order_id=od.order_id GROUP BY c.company_name ORDER BY revenue DESC LIMIT 10`, viz:'table', w:460, h:260 },
-  { id:'d3', name:'Monthly Orders 2026', sql:`SELECT TO_CHAR(order_date,'Mon') AS month, COUNT(*) AS orders FROM orders WHERE EXTRACT(YEAR FROM order_date)=2026 GROUP BY EXTRACT(MONTH FROM order_date), TO_CHAR(order_date,'Mon') ORDER BY EXTRACT(MONTH FROM order_date)`, viz:'line', w:440, h:260 },
-  { id:'d4', name:'Orders by Month & Shipper', sql:`SELECT TO_CHAR(o.order_date,'Mon') AS month, COUNT(CASE WHEN s.company_name='Federal Shipping' THEN 1 END) AS "Federal Shipping", COUNT(CASE WHEN s.company_name='Speedy Express' THEN 1 END) AS "Speedy Express", COUNT(CASE WHEN s.company_name='United Package' THEN 1 END) AS "United Package" FROM orders o JOIN shippers s ON o.ship_via=s.shipper_id GROUP BY EXTRACT(MONTH FROM o.order_date), TO_CHAR(o.order_date,'Mon') ORDER BY EXTRACT(MONTH FROM o.order_date)`, viz:'stacked', w:1390, h:300 },
-]
+// ── Draggable Grid ────────────────────────────────────────────────────────────
+type LivePos = {id:string,x:number,y:number,w:number,h:number}
+
+function getDefaultPos(v:DashView,i:number){
+  const col=i%3, row=Math.floor(i/3)
+  return {
+    x: v.gx ?? (v.viz==='table'||v.viz==='stacked' ? 0 : col*420),
+    y: v.gy ?? row*300,
+    w: v.gw ?? (v.viz==='kpi' ? 240 : v.viz==='table'||v.viz==='stacked' ? 900 : 380),
+    h: v.gh ?? (v.viz==='kpi' ? 120 : v.viz==='table' ? 300 : 260),
+  }
+}
+
+function DashGrid({views,onRemove,onEdit,onReorder}:{views:DashView[],onRemove:(id:string)=>void,onEdit:(v:DashView)=>void,onReorder:(views:DashView[])=>void}) {
+  const [live,setLive]=useState<LivePos|null>(null)
+  const viewsRef=useRef(views)
+  useEffect(()=>{viewsRef.current=views},[views])
+
+  const commit=(id:string,changes:{gx?:number,gy?:number,gw?:number,gh?:number})=>{
+    onReorder(viewsRef.current.map(v=>v.id===id?{...v,...changes}:v))
+  }
+
+  const startDrag=(e:React.MouseEvent,v:DashView,i:number)=>{
+    if((e.target as HTMLElement).closest('.dash-no-drag'))return
+    e.preventDefault()
+    const pos=getDefaultPos(v,i)
+    const ox=e.clientX-pos.x, oy=e.clientY-pos.y
+    const onMove=(ev:MouseEvent)=>{
+      setLive({id:v.id,x:Math.max(0,ev.clientX-ox),y:Math.max(0,ev.clientY-oy),w:pos.w,h:pos.h})
+    }
+    const onUp=(ev:MouseEvent)=>{
+      const x=Math.round(Math.max(0,ev.clientX-ox))
+      const y=Math.round(Math.max(0,ev.clientY-oy))
+      setLive(null)
+      commit(v.id,{gx:x,gy:y})
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
+  const startResize=(e:React.MouseEvent,v:DashView,i:number,handle:string)=>{
+    e.preventDefault();e.stopPropagation()
+    const pos=getDefaultPos(v,i)
+    const sx=e.clientX,sy=e.clientY
+    const {x:px,y:py,w:pw,h:ph}=pos
+    const onMove=(ev:MouseEvent)=>{
+      const dx=ev.clientX-sx, dy=ev.clientY-sy
+      let x=px,y=py,w=pw,h=ph
+      if(handle.includes('e')) w=Math.max(80,pw+dx)
+      if(handle.includes('s')) h=Math.max(60,ph+dy)
+      if(handle.includes('w')){w=Math.max(80,pw-dx);x=px+pw-w}
+      if(handle.includes('n')){h=Math.max(60,ph-dy);y=py+ph-h}
+      setLive({id:v.id,x,y,w,h})
+    }
+    const onUp=(ev:MouseEvent)=>{
+      const dx=ev.clientX-sx, dy=ev.clientY-sy
+      let x=px,y=py,w=pw,h=ph
+      if(handle.includes('e')) w=Math.max(80,pw+dx)
+      if(handle.includes('s')) h=Math.max(60,ph+dy)
+      if(handle.includes('w')){w=Math.max(80,pw-dx);x=px+pw-w}
+      if(handle.includes('n')){h=Math.max(60,ph-dy);y=py+ph-h}
+      setLive(null)
+      commit(v.id,{gx:Math.round(x),gy:Math.round(y),gw:Math.round(w),gh:Math.round(h)})
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
+  const canvasH=views.reduce((m,v,i)=>{
+    const p=live?.id===v.id?live:getDefaultPos(v,i)
+    return Math.max(m,p.y+p.h+60)
+  },500)
+
+  const HS=8 // handle size px
+
+  return(
+    <div style={{position:'relative',minHeight:canvasH}}>
+      {views.map((v,i)=>{
+        const base=getDefaultPos(v,i)
+        const p=live?.id===v.id?{x:live.x,y:live.y,w:live.w,h:live.h}:base
+        const isDragging=live?.id===v.id
+        return(
+          <div key={v.id} style={{position:'absolute',left:p.x,top:p.y,width:p.w,height:p.h,zIndex:isDragging?100:1,userSelect:'none'}}>
+            <DashCard view={v} onRemove={()=>onRemove(v.id)} onEdit={()=>onEdit(v)} onHeaderMouseDown={e=>startDrag(e,v,i)}/>
+            {/* resize handles */}
+            <div onMouseDown={e=>startResize(e,v,i,'se')} style={{position:'absolute',bottom:0,right:0,width:HS,height:HS,cursor:'se-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'sw')} style={{position:'absolute',bottom:0,left:0,width:HS,height:HS,cursor:'sw-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'ne')} style={{position:'absolute',top:0,right:0,width:HS,height:HS,cursor:'ne-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'nw')} style={{position:'absolute',top:0,left:0,width:HS,height:HS,cursor:'nw-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'e')} style={{position:'absolute',right:0,top:HS,bottom:HS,width:HS,cursor:'e-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'w')} style={{position:'absolute',left:0,top:HS,bottom:HS,width:HS,cursor:'w-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'s')} style={{position:'absolute',bottom:0,left:HS,right:HS,height:HS,cursor:'s-resize',zIndex:10}}/>
+            <div onMouseDown={e=>startResize(e,v,i,'n')} style={{position:'absolute',top:0,left:HS,right:HS,height:HS,cursor:'n-resize',zIndex:10}}/>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+
 const PRESET_KPIS = [
   { id:'k1', name:'Total Revenue', sql:`SELECT ROUND(SUM(unit_price*quantity*(1-discount)),0) AS value FROM order_details`, prefix:'$' },
   { id:'k2', name:'Total Orders', sql:`SELECT COUNT(*) AS value FROM orders`, prefix:'' },
@@ -1915,13 +2196,85 @@ const PRESET_KPIS = [
   { id:'k4', name:'Avg Order Value', sql:`SELECT ROUND(AVG(t),0) AS value FROM (SELECT SUM(od.unit_price*od.quantity*(1-od.discount)) AS t FROM orders o JOIN order_details od ON o.order_id=od.order_id GROUP BY o.order_id) x`, prefix:'$' },
 ]
 
-type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi',w:number,h:number,color?:string,rows?:any[],fields?:string[]}
-type DashPage = {id:string,name:string,views:DashView[]}
+type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi'|'donut',w:number,h:number,color?:string,rows?:any[],fields?:string[],size?:'normal'|'wide'|'full'|'sm'|'md'|'lg',order?:number,gx?:number,gy?:number,gw?:number,gh?:number}
+type DashPage = {id:string,name:string,views:DashView[],shared?:boolean,createdBy?:string}
 
 // ── Shared chart renderer ─────────────────────────────────────────────────────
+function DonutChart({slices,total,height}:{slices:any[],total:number,height:any}) {
+  const [tooltip,setTooltip]=useState<{label:string,val:number,pct:number,x:number,y:number}|null>(null)
+  const svgSize=typeof height==='number'?Math.min(height*0.85,220):180
+  return(
+    <div style={{display:'flex',alignItems:'center',width:'100%',height:'100%',gap:12,padding:'8px 12px',overflow:'hidden',boxSizing:'border-box',position:'relative'}}>
+      <svg viewBox="0 0 100 100" style={{width:svgSize,height:svgSize,flexShrink:0}}
+        onMouseLeave={()=>setTooltip(null)}>
+        {slices.map((s,i)=>(
+          <path key={i} d={s.path} fill={s.color} stroke="#fff" strokeWidth="1"
+            style={{cursor:'pointer',transition:'opacity .1s'}}
+            onMouseEnter={e=>{
+              const svg=(e.target as SVGPathElement).closest('svg')!.getBoundingClientRect()
+              setTooltip({label:s.label,val:s.val,pct:s.pct,x:e.clientX-svg.left,y:e.clientY-svg.top})
+            }}
+            onMouseMove={e=>{
+              const svg=(e.target as SVGPathElement).closest('svg')!.getBoundingClientRect()
+              setTooltip(t=>t?{...t,x:e.clientX-svg.left,y:e.clientY-svg.top}:null)
+            }}
+          />
+        ))}
+        <circle cx="50" cy="50" r="21" fill="#fff"/>
+        <text x="50" y="53" textAnchor="middle" style={{fontSize:8,fontWeight:700,fill:C.text,fontFamily:'Inter,sans-serif'}}>
+          {total>=1000?`${(total/1000).toFixed(1)}k`:String(Math.round(total))}
+        </text>
+        {tooltip&&(
+          <foreignObject x={Math.min(tooltip.x+4,60)} y={Math.max(tooltip.y-28,2)} width="70" height="32" style={{pointerEvents:'none'}}>
+            <div style={{background:'rgba(15,25,35,0.88)',color:'#fff',fontSize:9,padding:'4px 7px',borderRadius:5,whiteSpace:'nowrap',fontFamily:'Inter,sans-serif',lineHeight:1.5}}>
+              <div style={{fontWeight:600}}>{tooltip.label}</div>
+              <div>{tooltip.val.toLocaleString()} · {Math.round(tooltip.pct*100)}%</div>
+            </div>
+          </foreignObject>
+        )}
+      </svg>
+      <div style={{flex:1,overflow:'auto',display:'flex',flexDirection:'column',gap:4,minWidth:0}}>
+        {slices.map((s,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:6}}>
+            <div style={{width:8,height:8,borderRadius:'50%',background:s.color,flexShrink:0}}/>
+            <span style={{fontSize:11,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.label}</span>
+            <span style={{fontSize:11,fontWeight:600,color:C.textMuted,flexShrink:0}}>{Math.round(s.pct*100)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function ViewChart({viz,rows,fields,color=C.accent,height=200}:{viz:string,rows:any[],fields:string[],color?:string,height?:number}) {
   const lk=fields[0]||'', vk=fields[1]||''
   if(!rows.length) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height,color:C.textLight,fontSize:13}}>No data</div>
+  if(viz==='donut'){
+    if(!rows.length)return<div style={{display:'flex',alignItems:'center',justifyContent:'center',height,color:C.textLight,fontSize:13}}>No data</div>
+    const total=rows.reduce((s:number,r:any)=>s+(Number(Object.values(r)[1]||Object.values(r)[0])||0),0)
+    const colors=[C.accent,'#3B82F6','#F59E0B','#EF4444','#8B5CF6','#EC4899','#14B8A6','#F97316']
+    let startAngle=0
+    const cx=50,cy=50,r=38,inner=22
+    const slices=rows.slice(0,8).map((row:any,i:number)=>{
+      const val=Number(Object.values(row)[1]||Object.values(row)[0])||0
+      const pct=total>0?val/total:0
+      const angle=pct*360
+      const endAngle=startAngle+angle
+      const sa=startAngle,ea=endAngle
+      startAngle=endAngle
+      const toRad=(deg:number)=>deg*Math.PI/180
+      const x1=cx+r*Math.sin(toRad(sa)),y1=cy-r*Math.cos(toRad(sa))
+      const x2=cx+r*Math.sin(toRad(ea)),y2=cy-r*Math.cos(toRad(ea))
+      const xi1=cx+inner*Math.sin(toRad(sa)),yi1=cy-inner*Math.cos(toRad(sa))
+      const xi2=cx+inner*Math.sin(toRad(ea)),yi2=cy-inner*Math.cos(toRad(ea))
+      const large=angle>180?1:0
+      const label=String(Object.values(row)[0])
+      return{row,val,pct,label,color:colors[i%colors.length],path:`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${inner},${inner} 0 ${large},0 ${xi1},${yi1} Z`}
+    })
+    return(
+      <DonutChart slices={slices} total={total} height={height}/>
+    )
+  }
   if(viz==='kpi') return(
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',height}}>
       <div style={{textAlign:'center'}}>
@@ -2025,14 +2378,18 @@ function KpiCard({kpi}:{kpi:any}) {
 const SNAP=20 // snap grid in px
 function snap(n:number){return Math.round(n/SNAP)*SNAP}
 
-function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit:()=>void}) {
+function DashCard({view,onRemove,onEdit,onHeaderMouseDown}:{view:DashView,onRemove:()=>void,onEdit:()=>void,onHeaderMouseDown?:(e:React.MouseEvent)=>void}) {
   const [rows,setRows]=useState<any[]>(view.rows||[])
   const [fields,setFields]=useState<string[]>(view.fields||[])
   const [loading,setLoading]=useState(!view.rows?.length)
   const [menuOpen,setMenuOpen]=useState(false)
-  const [w,setW]=useState(view.w)
-  const [h,setH]=useState(view.h)
-  const startRef=useRef<{mx:number,my:number,sw:number,sh:number}|null>(null)
+  const [sortCol,setSortCol]=useState<string|null>(null)
+  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc')
+  const sortedRows=useMemo(()=>{
+    if(!sortCol)return rows
+    return [...rows].sort((a,b)=>{const cmp=String(a[sortCol]??'').localeCompare(String(b[sortCol]??''),undefined,{numeric:true});return sortDir==='asc'?cmp:-cmp})
+  },[rows,sortCol,sortDir])
+  const toggleSort=(col:string)=>{if(sortCol===col)setSortDir(d=>d==='asc'?'desc':'asc');else{setSortCol(col);setSortDir('asc')}}
 
   useEffect(()=>{
     if(view.rows?.length){setRows(view.rows);setFields(view.fields||[]);setLoading(false);return}
@@ -2048,37 +2405,15 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
     return()=>document.removeEventListener('click',close)
   },[menuOpen])
 
-  const onCornerMouseDown=(e:React.MouseEvent)=>{
-    e.preventDefault()
-    e.stopPropagation()
-    startRef.current={mx:e.clientX,my:e.clientY,sw:w,sh:h}
-    const onMove=(ev:MouseEvent)=>{
-      ev.preventDefault()
-      if(!startRef.current)return
-      const newW=snap(Math.max(240,Math.min(1320,startRef.current.sw+(ev.clientX-startRef.current.mx))))
-      const newH=snap(Math.max(140,Math.min(800,startRef.current.sh+(ev.clientY-startRef.current.my))))
-      setW(newW)
-      setH(newH)
-    }
-    const onUp=()=>{
-      startRef.current=null
-      window.removeEventListener('mousemove',onMove)
-      window.removeEventListener('mouseup',onUp)
-    }
-    window.addEventListener('mousemove',onMove)
-    window.addEventListener('mouseup',onUp)
-  }
-
-  // For table viz: scale font/padding with card size
-  const tableScale=Math.max(0.8,Math.min(1.6,w/440))
+  const tableScale=1
 
   return(
-    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',width:w===9999?'100%':w,flexShrink:0,boxSizing:'border-box'}}>
-      {/* Header */}
-      <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead,borderRadius:'10px 10px 0 0',flexShrink:0}}>
+    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',width:'100%',height:'100%',boxSizing:'border-box',overflow:'hidden'}}>
+      {/* Header — drag handle */}
+      <div onMouseDown={onHeaderMouseDown} style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead,borderRadius:'10px 10px 0 0',flexShrink:0,cursor:'grab'}}>
         <span style={{fontSize:12.5,fontWeight:600,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{view.name}</span>
         <div style={{position:'relative'}}>
-          <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
+          <button className="dash-no-drag" onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
             style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,lineHeight:1,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1}}
             onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
           {menuOpen&&(
@@ -2093,8 +2428,8 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
         </div>
       </div>
 
-      {/* Chart area — fills exact h, no padding eating height */}
-      <div style={{width:'100%',height:h,overflow:'hidden',flexShrink:0}}>
+      {/* Chart area — fills remaining height */}
+      <div style={{width:'100%',flex:1,overflow:'hidden',minHeight:0}}>
         {loading
           ?<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:C.textLight,fontSize:13}}>
             <div style={{width:14,height:14,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading…
@@ -2104,48 +2439,67 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:Math.round(12*tableScale)}}>
                 <thead style={{position:'sticky',top:0,zIndex:1}}>
                   <tr style={{background:C.tableHead}}>
-                    {fields.map(f=><th key={f} style={{padding:`${Math.round(6*tableScale)}px ${Math.round(10*tableScale)}px`,textAlign:'left',fontSize:Math.round(10*tableScale),color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
+                    {fields.map(f=><th key={f} onClick={()=>toggleSort(f)} style={{padding:`${Math.round(6*tableScale)}px ${Math.round(10*tableScale)}px`,textAlign:'left',fontSize:Math.round(10*tableScale),color:sortCol===f?C.accent:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap',cursor:'pointer',userSelect:'none'}}>{f.replace(/_/g,' ')} {sortCol===f?(sortDir==='asc'?'↑':'↓'):''}</th>)}
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r,i)=><tr key={i} style={{background:i%2===0?'#fff':C.tableRowAlt,borderBottom:`1px solid #F1F5F9`}}>
+                  {sortedRows.map((r,i)=><tr key={i} style={{background:i%2===0?'#fff':C.tableRowAlt,borderBottom:`1px solid #F1F5F9`}}>
                     {fields.map(f=><td key={f} style={{padding:`${Math.round(5*tableScale)}px ${Math.round(10*tableScale)}px`,color:C.text,whiteSpace:'nowrap',fontSize:Math.round(12*tableScale)}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():String(r[f]??'')}</td>)}
                   </tr>)}
                 </tbody>
               </table>
             </div>
-            :<ViewChart viz={view.viz} rows={rows} fields={fields} color={view.color||C.accent} height={h}/>}
-      </div>
-
-      {/* Corner resize handle */}
-      <div
-        onMouseDown={onCornerMouseDown}
-        title="Drag to resize"
-        style={{
-          position:'absolute',bottom:0,right:0,
-          width:20,height:20,
-          cursor:'se-resize',
-          zIndex:10,
-          display:'flex',alignItems:'flex-end',justifyContent:'flex-end',
-          padding:'3px',
-          userSelect:'none',
-        }}>
-        {/* Three diagonal lines — classic resize indicator */}
-        <svg width="11" height="11" viewBox="0 0 11 11" style={{display:'block',opacity:.45}}>
-          <line x1="9" y1="1" x2="1" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
-          <line x1="9" y1="5" x2="5" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
-          <line x1="9" y1="9" x2="9" y2="9" stroke={C.textLight} strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
+            :<ViewChart viz={view.viz} rows={rows} fields={fields} color={view.color||C.accent} height={'100%' as any}/>}
       </div>
     </div>
   )
 }
 
-// ── Visual Builder Modal ──────────────────────────────────────────────────────
-// Fully click-based. No drag. Simple and reliable.
-function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void,onClose:()=>void,existing?:DashView|null}) {
+// ── Visual Builder ────────────────────────────────────────────────────────────
+const VIZ_PILLS=[
+  {v:'bar',label:'Bar',icon:'📊'},
+  {v:'line',label:'Line',icon:'📈'},
+  {v:'stacked',label:'Stacked',icon:'📉'},
+  {v:'donut',label:'Donut',icon:'🍩'},
+  {v:'kpi',label:'KPI',icon:'💡'},
+  {v:'table',label:'Table',icon:'📋'},
+]
+
+
+function ColButton({
+  col,
+  xCol,
+  yCol,
+  setXCol,
+  setYCol
+}:{
+  col: typeof ALL_COLS[0],
+  xCol: string,
+  yCol: string,
+  setXCol: (v:string)=>void,
+  setYCol: (v:string)=>void
+}) {
+  const key=`${col.table}.${col.n}`
+  const isX=xCol===key, isY=yCol===key
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:4,padding:'4px 6px',borderRadius:5,marginBottom:2,background:isX||isY?C.accentBg:'#fff',border:`1px solid ${isX||isY?C.accent:C.cardBorder}`}}>
+      <span style={{width:6,height:6,borderRadius:'50%',background:TC[col.t]||'#8A9BB0',display:'inline-block',flexShrink:0}}/>
+      <span style={{fontFamily:"'JetBrains Mono'",fontSize:10.5,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{col.n}</span>
+      <button onClick={()=>setXCol(isX?'':key)} title="Set as X axis / Dimension"
+        style={{fontSize:10,padding:'1px 5px',borderRadius:3,border:'1.5px solid',cursor:'pointer',fontWeight:700,fontFamily:'Inter,sans-serif',lineHeight:1.4,
+          borderColor:isX?C.accent:C.cardBorder,background:isX?C.accent:'#F8FAFD',color:isX?'#fff':C.textLight}}>X</button>
+      <button onClick={()=>setYCol(isY?'':key)} title="Set as Y axis / Measure"
+        style={{fontSize:10,padding:'1px 5px',borderRadius:3,border:'1.5px solid',cursor:'pointer',fontWeight:700,fontFamily:'Inter,sans-serif',lineHeight:1.4,
+          borderColor:isY?C.accentDark:C.cardBorder,background:isY?C.accentDark:'#F8FAFD',color:isY?'#fff':C.textLight}}>Y</button>
+    </div>
+  )
+}
+
+const VIZ_TYPES:[DashView['viz'],string][]=[['bar','Bar'],['line','Line'],['stacked','Stacked Bar'],['table','Table'],['kpi','KPI']]
+
+function VisualBuilder({onSave,onClose,existing=null,tables=TABLES}:{onSave:(v:DashView)=>void,onClose:()=>void,existing?:DashView|null,tables?:any[]}) {
   // mode: 'visual' = click fields | 'sql' = paste SQL
-  const [mode,setMode]=useState<'visual'|'sql'>(existing?'sql':'visual')
+  const [mode,setMode]=useState<'visual'|'sql'|'ai'>(existing?'sql':'visual')
   const [name,setName]=useState(existing?.name||'')
   const [viz,setViz]=useState<DashView['viz']>(existing?.viz||'bar')
   const [xCol,setXCol]=useState<string>('')   // "table.col"
@@ -2154,6 +2508,9 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
   const [limit,setLimit]=useState(50)
   const [customSQL,setCustomSQL]=useState(existing?.sql||'')
   const [colSearch,setColSearch]=useState('')
+  const [aiMessages,setAiMessages]=useState<{role:'user'|'ai',text:string,sql?:string}[]>([])
+  const [aiInput,setAiInput]=useState('')
+  const [aiLoading,setAiLoading]=useState(false)
   // preview
   const [previewRows,setPreviewRows]=useState<any[]>(existing?.rows||[])
   const [previewFields,setPreviewFields]=useState<string[]>(existing?.fields||[])
@@ -2185,7 +2542,7 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
     return `SELECT\n  ${xCol},\n  COUNT(*) AS count\nFROM ${primary}\nGROUP BY ${xCol}\nORDER BY 2 DESC\nLIMIT ${limit}`
   },[mode,xCol,yCol,agg,limit,viz])
 
-  const activeSQL=mode==='sql'?customSQL:builtSQL
+  const activeSQL=(mode==='sql'||(mode as string)==='ai')?customSQL:builtSQL
 
   // Auto-run preview whenever activeSQL changes
   useEffect(()=>{
@@ -2204,41 +2561,49 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
     return()=>clearTimeout(previewTimer.current)
   },[activeSQL])
 
-  const canSave=name.trim()&&activeSQL.trim()
+  const runAI=async()=>{
+    if(!aiInput.trim()||aiLoading)return
+    const userMsg={role:'user' as const,text:aiInput}
+    setAiMessages(p=>[...p,userMsg])
+    setAiInput('')
+    setAiLoading(true)
+    try{
+      // Build context from conversation history
+      const history=aiMessages.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.text}${m.sql?'\nSQL: '+m.sql:''}`).join('\n')
+      const question=history?`${history}\nUser: ${aiInput}`:aiInput
+      const r=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question})})
+      const d=await r.json()
+      if(d.sql){
+        setCustomSQL(d.sql)
+        setAiMessages(p=>[...p,{role:'ai' as const,text:`Done ✓ — ${aiInput.slice(0,30).toLowerCase().includes('percent')||aiInput.includes('%')?'Running the percent change calc now.':aiInput.toLowerCase().includes('format')?'Reformatted. Check the preview.':aiInput.toLowerCase().includes('table')?'Built as a table. Change chart type below.':'Preview is loading below.'}`,sql:d.sql}])
+      } else {
+        setAiMessages(p=>[...p,{role:'ai' as const,text:`Hmm, ${d.error?'got an error: '+d.error.slice(0,60):'couldn\'t build that one. Try rephrasing or being more specific about the columns.'}`}])
+      }
+    }catch(e:any){
+      setAiMessages(p=>[...p,{role:'ai' as const,text:'Something went wrong on my end — try again.'}])
+    }
+    setAiLoading(false)
+  }
+  const canSave=!!activeSQL.trim()
 
   const handleSave=()=>{
     if(!canSave)return
     onSave({
-      id:existing?.id||`v${Date.now()}`,
+      id:existing?.id||(crypto?.randomUUID?.()||`v${Date.now()}-${Math.random().toString(36).slice(2)}`),
       name:name.trim(),
       sql:activeSQL,
       viz,
-      w:existing?.w||460,
-      h:existing?.h||240,
+      w:existing?.w||480,
+      h:existing?.h||280,
+      gw:existing?.gw||(viz==='kpi'?240:viz==='table'?900:380),
+      gh:existing?.gh||(viz==='kpi'?120:viz==='table'?300:260),
       rows:previewRows,
       fields:previewFields,
     })
     onClose()
   }
 
-  const VIZ_TYPES:[DashView['viz'],string][]=[['bar','Bar'],['line','Line'],['stacked','Stacked Bar'],['table','Table'],['kpi','KPI']]
 
-  const ColButton=({col}:{col:typeof ALL_COLS[0]})=>{
-    const key=`${col.table}.${col.n}`
-    const isX=xCol===key, isY=yCol===key
-    return(
-      <div style={{display:'flex',alignItems:'center',gap:4,padding:'4px 6px',borderRadius:5,marginBottom:2,background:isX||isY?C.accentBg:'#fff',border:`1px solid ${isX||isY?C.accent:C.cardBorder}`}}>
-        <span style={{width:6,height:6,borderRadius:'50%',background:TC[col.t]||'#8A9BB0',display:'inline-block',flexShrink:0}}/>
-        <span style={{fontFamily:"'JetBrains Mono'",fontSize:10.5,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{col.n}</span>
-        <button onClick={()=>setXCol(isX?'':key)} title="Set as X axis / Dimension"
-          style={{fontSize:10,padding:'1px 5px',borderRadius:3,border:'1.5px solid',cursor:'pointer',fontWeight:700,fontFamily:'Inter,sans-serif',lineHeight:1.4,
-            borderColor:isX?C.accent:C.cardBorder,background:isX?C.accent:'#F8FAFD',color:isX?'#fff':C.textLight}}>X</button>
-        <button onClick={()=>setYCol(isY?'':key)} title="Set as Y axis / Measure"
-          style={{fontSize:10,padding:'1px 5px',borderRadius:3,border:'1.5px solid',cursor:'pointer',fontWeight:700,fontFamily:'Inter,sans-serif',lineHeight:1.4,
-            borderColor:isY?C.accentDark:C.cardBorder,background:isY?C.accentDark:'#F8FAFD',color:isY?'#fff':C.textLight}}>Y</button>
-      </div>
-    )
-  }
 
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.7)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
@@ -2251,21 +2616,12 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
           <input value={name} onChange={e=>setName(e.target.value)} placeholder="Chart title…"
             style={{flex:1,maxWidth:240,padding:'6px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif'}}
             onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
-          {/* Viz type */}
-          <div style={{display:'flex',gap:4}}>
-            {VIZ_TYPES.map(([v,l])=>(
-              <button key={v} onClick={()=>setViz(v)}
-                style={{padding:'5px 11px',borderRadius:6,border:'1.5px solid',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500,
-                  borderColor:viz===v?C.accent:C.cardBorder,background:viz===v?C.accentBg:'#fff',color:viz===v?C.accent:C.textMuted}}>
-                {l}
-              </button>
-            ))}
-          </div>
           {/* Mode toggle */}
-          <button onClick={()=>setMode(m=>m==='visual'?'sql':'visual')}
-            style={{padding:'5px 12px',borderRadius:6,border:`1.5px solid ${mode==='sql'?C.accent:C.cardBorder}`,background:mode==='sql'?C.accentBg:'#fff',color:mode==='sql'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500,whiteSpace:'nowrap'}}>
-            {mode==='sql'?'← Visual':'SQL / Paste'}
-          </button>
+          <div style={{display:'flex',gap:4}}>
+            <button onClick={()=>setMode('visual')} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='visual'?C.accent:C.cardBorder}`,background:mode==='visual'?C.accentBg:'#fff',color:mode==='visual'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>Fields</button>
+            <button onClick={()=>setMode('ai')} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='ai'?C.accent:C.cardBorder}`,background:mode==='ai'?C.accentBg:'#fff',color:mode==='ai'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>✨ AI</button>
+            <button onClick={()=>setMode('sql')} style={{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${mode==='sql'?C.accent:C.cardBorder}`,background:mode==='sql'?C.accentBg:'#fff',color:mode==='sql'?C.accent:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500}}>SQL</button>
+          </div>
           <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:C.textLight,cursor:'pointer',lineHeight:1,padding:'0 2px'}}>×</button>
         </div>
 
@@ -2287,7 +2643,15 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
                   return(
                     <div key={tbl.name} style={{marginBottom:10}}>
                       <div style={{fontSize:9,fontWeight:700,color:tbl.color,textTransform:'uppercase',letterSpacing:'0.06em',padding:'2px 5px',marginBottom:3}}>{tbl.name}</div>
-                      {cols.map(col=><ColButton key={`${col.table}.${col.n}`} col={col}/>)}
+                      {cols.map(col=>
+                      <ColButton
+                          key={`${col.table}.${col.n}`}
+                          col={col}
+                          xCol={xCol}
+                          yCol={yCol}
+                          setXCol={setXCol}
+                          setYCol={setYCol}
+                        />)}
                     </div>
                   )
                 })}
@@ -2337,6 +2701,40 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
                     </div>
                   )}
                 </div>
+              ):mode==='ai'?(
+                <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden',minHeight:0}}>
+                  <div style={{height:220,overflowY:'auto',padding:'10px 12px',display:'flex',flexDirection:'column',gap:8,flexShrink:0}}>
+                    {aiMessages.length===0&&(
+                      <div style={{color:C.textLight,fontSize:12.5,lineHeight:1.6,padding:'8px 0'}}>
+                        Describe the chart you want. I'll write the SQL and you can refine it together.<br/>
+                        <span style={{fontSize:11.5,color:C.textMuted}}>e.g. "Revenue by category as a bar chart"</span>
+                      </div>
+                    )}
+                    {aiMessages.map((m,i)=>(
+                      <div key={i} style={{display:'flex',flexDirection:'column',alignItems:m.role==='user'?'flex-end':'flex-start',gap:3}}>
+                        <div style={{maxWidth:'90%',padding:'7px 11px',borderRadius:m.role==='user'?'10px 10px 3px 10px':'10px 10px 10px 3px',
+                          background:m.role==='user'?C.accent:'#F0F4F8',color:m.role==='user'?'#fff':C.text,fontSize:12.5,lineHeight:1.5}}>
+                          {m.text}
+                        </div>
+        
+                      </div>
+                    ))}
+                    {aiLoading&&<div style={{display:'flex',alignItems:'center',gap:6,color:C.textLight,fontSize:12}}>
+                      <div style={{width:10,height:10,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>
+                      Thinking…
+                    </div>}
+                  </div>
+                  <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'8px 10px',display:'flex',gap:6,background:'#fff',flexShrink:0}}>
+                    <input value={aiInput} onChange={e=>setAiInput(e.target.value)}
+                      placeholder="Ask me to adjust the chart…"
+                      style={{flex:1,padding:'7px 10px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:'Inter,sans-serif'}}
+                      onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();runAI()}}}/>
+                    <button onClick={runAI} disabled={!aiInput.trim()||aiLoading}
+                      style={{padding:'7px 12px',borderRadius:7,border:'none',background:aiInput.trim()&&!aiLoading?C.accent:'#E5E7EB',color:aiInput.trim()&&!aiLoading?'#fff':C.textLight,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:600}}>
+                      {aiLoading?'…':'Send'}
+                    </button>
+                  </div>
+                </div>
               ):(
                 <div>
                   <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>SQL — paste or write any query</div>
@@ -2356,9 +2754,48 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
                 {previewErr&&<span style={{fontSize:11.5,color:C.danger,flex:1}}>{previewErr}</span>}
                 {!activeSQL&&!previewLoading&&!previewErr&&<span style={{fontSize:11.5,color:C.textLight}}>Select fields above to see a preview</span>}
               </div>
-              <div style={{flex:1,padding:16,overflow:'hidden',minHeight:200}}>
-                {previewRows.length>0&&<ViewChart viz={viz} rows={previewRows} fields={previewFields} height={220}/>}
-              </div>
+                {previewRows.length > 0 && (
+                  <div style={{padding:'6px 18px',borderBottom:`1px solid ${C.cardBorder}`,background:'#fff',display:'flex',gap:5,flexWrap:'wrap',alignItems:'center',flexShrink:0}}>
+                    <span style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginRight:2}}>
+                      Chart type
+                    </span>
+                
+                    {(['bar','line','stacked','donut','kpi','table'] as const).map(v=>(
+                      <button
+                        key={v}
+                        onClick={()=>setViz(v)}
+                        style={{
+                          padding:'3px 10px',
+                          borderRadius:12,
+                          border:'1.5px solid',
+                          cursor:'pointer',
+                          fontFamily:'Inter,sans-serif',
+                          fontSize:11.5,
+                          fontWeight:500,
+                          borderColor:viz===v?C.accent:C.cardBorder,
+                          background:viz===v?C.accentBg:'#fff',
+                          color:viz===v?C.accent:C.textMuted
+                        }}
+                      >
+                        {v==='bar'?'📊 Bar':
+                         v==='line'?'📈 Line':
+                         v==='stacked'?'📉 Stacked':
+                         v==='donut'?'🍩 Donut':
+                         v==='kpi'?'💡 KPI':'📋 Table'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {true && (
+                  <div style={{display:'none'}}></div>
+                )}
+
+                <div style={{flex:1,padding:16,overflow:'hidden',minHeight:200}}>
+                  {previewRows.length > 0 && (
+                    <ViewChart viz={viz} rows={previewRows} fields={previewFields} height={220}/>
+                  )}
+                </div>
             </div>
           </div>
         </div>
@@ -2395,14 +2832,71 @@ function PresetCard({preset,onEdit,fullWidth=false}:{preset:any,onEdit:()=>void,
 
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
-function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void}) {
+function DashboardTab({sharedResults,onResultSaved,isCompanyUser=false,hasDb=false,onConnect,activeTables=TABLES,userRole='viewer',currentUser}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void,isCompanyUser?:boolean,hasDb?:boolean,onConnect?:()=>void,activeTables?:any[],userRole?:string,currentUser?:any}) {
   const [pages,setPages]=useState<DashPage[]>([{id:'overview',name:'Overview',views:[]}])
   const [activePage,setActivePage]=useState('overview')
   const [renamingPage,setRenamingPage]=useState<string|null>(null)
   const [builder,setBuilder]=useState<{open:boolean,editing:DashView|null}>({open:false,editing:null})
   const [customViews,setCustomViews]=useState<DashView[]>([])
   const [showAlerts,setShowAlerts]=useState(false)
+  const [dashLoaded,setDashLoaded]=useState(false)
+  const saveTimer=useRef<any>(null)
+  const [tabMenu,setTabMenu]=useState<{id:string,x:number,y:number}|null>(null)
 
+  // Load dashboard from API on mount
+  const firstLoad=useRef(true)
+  useEffect(()=>{
+    fetch('/api/dashboard').then(r=>r.json()).then(d=>{
+      console.log('[Dashboard] Loaded:', JSON.stringify({views:d.customViews?.length, pages:d.pages?.length}))
+      if(d.customViews&&d.customViews.length>0){
+        // Normalize API response — map sql_query→sql, viz_type→viz, card_width→w, card_height→h
+        const normalize=(v:any)=>({...v,
+          sql:v.sql||v.sql_query||'',
+          viz:v.viz||v.viz_type||'bar',
+          w:Number(v.w||v.card_width||480),
+          h:Number(v.h||v.card_height||280),
+          gw:v.gw!=null?Number(v.gw):undefined,
+          gh:v.gh!=null?Number(v.gh):undefined,
+          gx:v.gx!=null?Number(v.gx):undefined,
+          gy:v.gy!=null?Number(v.gy):undefined,
+          rows:v.rows||v.rows_cache||[],
+          fields:v.fields||v.fields_cache||[],
+        })
+        setCustomViews(d.customViews.map(normalize))
+      }
+      if(d.pages&&d.pages.length>0)setPages(d.pages)
+      setDashLoaded(true)
+    }).catch(()=>setDashLoaded(true))
+  },[])
+
+  const [unsaved,setUnsaved]=useState(false)
+  const [saving,setSaving]=useState(false)
+
+  useEffect(()=>{
+    if(!dashLoaded)return
+    if(firstLoad.current){firstLoad.current=false;return}
+    setUnsaved(true)
+  },[customViews,pages,dashLoaded])
+
+  const saveLayout=async()=>{
+    setSaving(true)
+    try{
+      await fetch('/api/dashboard',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({customViews,pages})})
+      setUnsaved(false)
+    }catch{}
+    setSaving(false)
+  }
+
+  const isAdminOrEditor = userRole==='admin' || userRole==='analyst'
+
+  const visiblePages = isAdminOrEditor
+    ? pages
+    : pages.filter(pg =>
+        pg.id==='overview' ||
+        pg.shared!==false ||
+        (pg.createdBy && pg.createdBy===currentUser?.id)
+      )
   const isOverview=activePage==='overview'&&!showAlerts
   const currentPage=pages.find(p=>p.id===activePage)||pages[0]
   const currentViews=isOverview?customViews:currentPage.views
@@ -2430,11 +2924,13 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
   const addPage=()=>{
     const id=`p${Date.now()}`
     const name=`Page ${pages.length}`
-    setPages(p=>[...p,{id,name,views:[]}])
+    setPages(p=>[...p,{id,name,views:[],shared:true,createdBy:currentUser?.id||'me'}])
     setActivePage(id)
   }
 
   const deletePage=(id:string)=>{
+    const pg=pages.find(p=>p.id===id)
+    if(!window.confirm(`Delete "${pg?.name||'this page'}"? All visuals on it will be removed.`))return
     setPages(p=>p.filter(pg=>pg.id!==id))
     if(activePage===id)setActivePage('overview')
   }
@@ -2444,64 +2940,216 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
     setRenamingPage(null)
   }
 
-  return(
-    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:C.bg}}>
-      {/* Tab bar */}
-      <div style={{background:'#fff',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',padding:'0 16px',flexShrink:0,overflowX:'auto'}}>
-        {pages.map(pg=>(
-          <div key={pg.id} style={{display:'flex',alignItems:'center',flexShrink:0,borderBottom:`2px solid ${activePage===pg.id?C.accent:'transparent'}`,marginRight:2}}>
-            <div onClick={()=>setActivePage(pg.id)}
-              style={{padding:'11px 10px',cursor:'pointer',fontSize:13,fontWeight:activePage===pg.id?600:400,color:activePage===pg.id?C.accent:C.textMuted,whiteSpace:'nowrap'}}>
-              {renamingPage===pg.id
-                ?<input autoFocus defaultValue={pg.name}
-                    onBlur={e=>renamePage(pg.id,e.target.value||pg.name)}
-                    onKeyDown={e=>{if(e.key==='Enter')renamePage(pg.id,(e.target as HTMLInputElement).value||pg.name);if(e.key==='Escape')setRenamingPage(null)}}
-                    onClick={e=>e.stopPropagation()}
-                    style={{fontSize:13,border:'none',borderBottom:`1px solid ${C.accent}`,outline:'none',width:80,fontFamily:'Inter,sans-serif',background:'none',color:C.text}}/>
-                :<span onDoubleClick={e=>{e.stopPropagation();if(pg.id!=='overview')setRenamingPage(pg.id)}}>{pg.name}</span>}
-            </div>
-            {pg.id!=='overview'&&activePage===pg.id&&(
-              <button onClick={e=>{e.stopPropagation();deletePage(pg.id)}} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:13,padding:'0 4px',lineHeight:1}}
-                onMouseOver={e=>e.currentTarget.style.color=C.danger} onMouseOut={e=>e.currentTarget.style.color=C.textLight}>×</button>
+  const togglePageShared=(id:string)=>{
+    setPages(p=>p.map(pg=>pg.id===id?{...pg,shared:!pg.shared}:pg))
+  }
+
+return (
+  <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:C.bg}}>
+    
+    {/* Tab bar */}
+    <div style={{background:'#fff',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',padding:'0 16px',flexShrink:0,overflowX:'auto'}}>
+      
+      {visiblePages.map(pg => (
+        <div
+          key={pg.id}
+          style={{
+            display:'flex',
+            alignItems:'center',
+            flexShrink:0,
+            borderBottom:`2px solid ${activePage===pg.id?C.accent:'transparent'}`,
+            marginRight:2
+          }}
+        >
+          
+          <div
+            onClick={()=>{
+              setActivePage(pg.id)
+              setShowAlerts(false)
+            }}
+            onContextMenu={e=>{
+              if(pg.id==='overview') return
+              e.preventDefault()
+              setTabMenu({id:pg.id,x:e.clientX,y:e.clientY})
+            }}
+            style={{
+              padding:'11px 10px',
+              cursor:'pointer',
+              fontSize:13,
+              fontWeight:activePage===pg.id?600:400,
+              color:activePage===pg.id?C.accent:C.textMuted,
+              whiteSpace:'nowrap',
+              userSelect:'none'
+            }}
+          >
+            
+            {renamingPage===pg.id ? (
+              <input
+                autoFocus
+                defaultValue={pg.name}
+                onBlur={e=>renamePage(pg.id,e.target.value||pg.name)}
+                onKeyDown={e=>{
+                  if(e.key==='Enter') renamePage(pg.id,(e.target as HTMLInputElement).value||pg.name)
+                  if(e.key==='Escape') setRenamingPage(null)
+                }}
+                onClick={e=>e.stopPropagation()}
+                style={{
+                  fontSize:13,
+                  border:'none',
+                  borderBottom:`1px solid ${C.accent}`,
+                  outline:'none',
+                  width:80,
+                  fontFamily:'Inter,sans-serif',
+                  background:'none',
+                  color:C.text
+                }}
+              />
+            ) : (
+              <span
+                onDoubleClick={e=>{
+                  e.stopPropagation()
+                  if(pg.id!=='overview') setRenamingPage(pg.id)
+                }}
+              >
+                {pg.name}
+              </span>
             )}
+          
           </div>
-        ))}
-        <button onClick={addPage} style={{padding:'10px 12px',fontSize:13,color:C.textLight,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0,whiteSpace:'nowrap'}}>+ Page</button>
-        {/* Alerts tab */}
-        <div style={{borderBottom:`2px solid ${showAlerts?C.danger:'transparent'}`,marginRight:2}}>
-          <button onClick={()=>{setShowAlerts(s=>!s);setActivePage('overview')}}
-            style={{padding:'11px 10px',cursor:'pointer',fontSize:13,fontWeight:showAlerts?600:400,color:showAlerts?C.danger:C.textMuted,background:'none',border:'none',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:5}}>
-            🔔 Alerts
-          </button>
+
+          {pg.id!=='overview' && activePage===pg.id && (
+            <button
+              onClick={e=>{
+                e.stopPropagation()
+                deletePage(pg.id)
+              }}
+              style={{
+                background:'none',
+                border:'none',
+                color:C.textLight,
+                cursor:'pointer',
+                fontSize:13,
+                padding:'0 4px',
+                lineHeight:1
+              }}
+              onMouseOver={e=>e.currentTarget.style.color=C.danger}
+              onMouseOut={e=>e.currentTarget.style.color=C.textLight}
+            >
+              ×
+            </button>
+          )}
+
         </div>
-        <div style={{marginLeft:'auto',paddingLeft:12,flexShrink:0}}>
-          <button onClick={()=>openBuilder(null)} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600,whiteSpace:'nowrap'}}>+ Add visual</button>
+      ))}
+
+      {isAdminOrEditor && (
+        <button
+          onClick={addPage}
+          style={{
+            padding:'10px 12px',
+            fontSize:13,
+            color:C.textLight,
+            background:'none',
+            border:'none',
+            cursor:'pointer',
+            fontFamily:'Inter,sans-serif',
+            flexShrink:0,
+            whiteSpace:'nowrap'
+          }}
+        >
+          + Page
+        </button>
+      )}
+
+      {/* Alerts tab */}
+      <div style={{borderBottom:`2px solid ${showAlerts?C.danger:'transparent'}`,marginRight:2}}>
+        <button
+          onClick={()=>{
+            setShowAlerts(s=>!s)
+            setActivePage('overview')
+          }}
+          style={{
+            padding:'11px 10px',
+            cursor:'pointer',
+            fontSize:13,
+            fontWeight:showAlerts?600:400,
+            color:showAlerts?C.danger:C.textMuted,
+            background:'none',
+            border:'none',
+            fontFamily:'Inter,sans-serif',
+            whiteSpace:'nowrap',
+            display:'flex',
+            alignItems:'center',
+            gap:5
+          }}
+        >
+          🔔 Alerts
+        </button>
+      </div>
+
+      {/* Right side */}
+      <div style={{marginLeft:'auto',paddingLeft:12,flexShrink:0}}>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            {isAdminOrEditor&&(
+              <button onClick={saveLayout} disabled={saving||!unsaved}
+                style={{fontSize:12,padding:'5px 14px',borderRadius:6,border:`1px solid ${unsaved?C.accent:C.cardBorder}`,background:unsaved?C.accentBg:'#F8FAFD',color:unsaved?C.accent:C.textLight,cursor:unsaved?'pointer':'default',fontFamily:'Inter,sans-serif',fontWeight:600,whiteSpace:'nowrap'}}>
+                {saving?'Saving…':unsaved?'Save layout':'Saved ✓'}
+              </button>
+            )}
+
+            {isAdminOrEditor && (
+              <button
+                onClick={()=>openBuilder(null)}
+                style={{
+                  fontSize:12.5,
+                  padding:'6px 16px',
+                  borderRadius:6,
+                  border:'none',
+                  background:C.accent,
+                  color:'#fff',
+                  cursor:'pointer',
+                  fontFamily:'Inter,sans-serif',
+                  fontWeight:600,
+                  whiteSpace:'nowrap'
+                }}
+              >
+                + Add visual
+              </button>
+            )}
+
+          </div>
+
         </div>
       </div>
 
+    </div>
+
       {/* Canvas */}
       <div style={{flex:1,overflowY:'auto',padding:20}}>
-        {showAlerts&&<AlertsTab/>}
+        {showAlerts&&<AlertsTab isCompanyUser={isCompanyUser} hasDb={hasDb} userRole={userRole}/>}
         {!showAlerts&&isOverview&&(
           <>
-            <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
-              {PRESET_KPIS.map(kpi=><KpiCard key={kpi.id} kpi={kpi}/>)}
-            </div>
-            <div style={{display:'flex',flexWrap:'wrap',gap:14,marginBottom:14}}>
-              {PRESET_QUERIES.slice(0,3).map(p=>(
-                <PresetCard key={p.id} preset={p} onEdit={()=>openBuilder({id:p.id,name:p.name,sql:p.sql,viz:p.viz as any,w:p.w,h:p.h})}/>
-              ))}
-            </div>
-            {/* Stacked bar — full width */}
-            <div style={{marginBottom:customViews.length?20:0, maxWidth:1350}}>
-              <PresetCard key={PRESET_QUERIES[3].id} preset={PRESET_QUERIES[3]} onEdit={()=>openBuilder({id:PRESET_QUERIES[3].id,name:PRESET_QUERIES[3].name,sql:PRESET_QUERIES[3].sql,viz:PRESET_QUERIES[3].viz as any,w:PRESET_QUERIES[3].w,h:PRESET_QUERIES[3].h})}/>            </div>
-            {customViews.length>0&&(
-              <div>
-                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:12}}>Custom visuals</div>
-                <div style={{display:'flex',flexWrap:'wrap',gap:14}}>
-                  {customViews.map(v=><DashCard key={v.id} view={v} onRemove={()=>removeView(v.id)} onEdit={()=>openBuilder(v)}/>)}
-                </div>
+            {/* Company user with no DB — clean empty state */}
+            {isCompanyUser&&!hasDb&&(
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',paddingTop:80,textAlign:'center'}}>
+                <div style={{fontSize:44,marginBottom:16}}>📊</div>
+                <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:8,letterSpacing:'-0.2px'}}>Your dashboard is ready</div>
+                <div style={{fontSize:14,color:C.textMuted,lineHeight:1.65,marginBottom:24,maxWidth:360}}>Connect your database and your KPIs, charts, and tables will live here — built from your real data.</div>
+                <button onClick={()=>onConnect&&onConnect()} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'11px 26px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Connect database →</button>
               </div>
+            )}
+            {/* Company user with DB — show their custom visuals or empty prompt */}
+            {isCompanyUser&&hasDb&&customViews.length===0&&(
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',paddingTop:80,textAlign:'center'}}>
+                <div style={{fontSize:44,marginBottom:16}}>📊</div>
+                <div style={{fontSize:15,fontWeight:600,color:C.text,marginBottom:8}}>No visuals yet</div>
+                <div style={{fontSize:13,color:C.textMuted,marginBottom:24}}>Click "Add visual" to build your first chart or KPI card from your live data.</div>
+                <button onClick={()=>openBuilder(null)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Add visual</button>
+              </div>
+            )}
+            {customViews.length>0&&(
+              <DashGrid views={customViews} onRemove={removeView} onEdit={openBuilder} onReorder={setCustomViews}/>
             )}
           </>
         )}
@@ -2513,13 +3161,30 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
               <div style={{fontSize:13,color:C.textMuted,marginBottom:24}}>Double-click the tab to rename · Click "Add visual" to get started</div>
               <button onClick={()=>openBuilder(null)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Add visual</button>
             </div>
-            :<div style={{display:'flex',flexWrap:'wrap',gap:14}}>
-              {currentViews.map(v=><DashCard key={v.id} view={v} onRemove={()=>removeView(v.id)} onEdit={()=>openBuilder(v)}/>)}
-            </div>
+            :<DashGrid views={currentViews} onRemove={removeView} onEdit={openBuilder} onReorder={views=>setPages(p=>p.map(pg=>pg.id===activePage?{...pg,views}:pg))}/>
         )}
       </div>
 
-      {builder.open&&<VisualBuilder onSave={saveView} onClose={closeBuilder} existing={builder.editing}/>}
+      {tabMenu&&(
+        <>
+          <div style={{position:'fixed',inset:0,zIndex:498}} onClick={()=>setTabMenu(null)}/>
+          <div style={{position:'fixed',left:tabMenu.x,top:tabMenu.y,zIndex:499,background:'#fff',borderRadius:8,border:`1px solid ${C.cardBorder}`,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',minWidth:160,overflow:'hidden'}}>
+            <div style={{padding:'7px 12px',fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`1px solid ${C.cardBorder}`}}>
+              {pages.find(p=>p.id===tabMenu.id)?.name||'Page'}
+            </div>
+            <button onClick={()=>{setRenamingPage(tabMenu.id);setTabMenu(null)}} style={{display:'block',width:'100%',padding:'9px 12px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+              onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>
+              ✏️ Rename
+            </button>
+            <div style={{height:1,background:C.cardBorder}}/>
+            <button onClick={()=>{deletePage(tabMenu.id);setTabMenu(null)}} style={{display:'block',width:'100%',padding:'9px 12px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
+              onMouseOver={e=>e.currentTarget.style.background='#FEF2F2'} onMouseOut={e=>e.currentTarget.style.background='none'}>
+              🗑 Delete
+            </button>
+          </div>
+        </>
+      )}
+      {builder.open&&<VisualBuilder onSave={saveView} onClose={closeBuilder} existing={builder.editing} tables={activeTables}/>}
     </div>
   )
 }
@@ -2684,68 +3349,89 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
       {id:`m${Date.now()}t`,role:'assistant',text:'',loading:true}
     ])
     setChatLoading(true)
-
-    // Build conversation history in the format buildMessages() in route.ts expects
-    const prevMsgs=chatMsgs.filter(m=>!m.loading)
-    const convCtx=prevMsgs.length>0
-      ?`Previous messages:\n${prevMsgs.slice(-6).map(m=>`${m.role}: ${m.text}`).join('\n')}`
-      :undefined
-
     try{
-      const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+      // Always run the query first to get real data
+      const qRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
-          // Embed table context directly in the question so Claude knows the schema
-          question:`The user is viewing the "${table.name}" table (columns: ${fields.join(', ')}, ${rows.length} rows loaded). Question: ${q}`,
-          conversationContext:convCtx
+          question:`About the ${table.name} table: ${q}`,
+          conversationContext:`The user is viewing the ${table.name} table. Columns: ${fields.join(', ')}. ${rows.length} rows loaded.`
         })})
-      const data=await res.json()
+      const qData=await qRes.json()
 
-      if(data.error){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${data.error}`}))
+      if(qData.error){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${qData.error}`}))
         return
       }
 
-      // Text-type response (explanation, definition, non-queryable question)
-      if(data.answer){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:data.answer}))
-        return
-      }
-
-      const resultRows:any[]=data.rows||[]
-      const resultFields:string[]=data.fields||[]
-
-      if(resultRows.length===0){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found for that query.'}))
-        return
-      }
+      const resultRows:any[]=qData.rows||[]
+      const resultFields:string[]=qData.fields||[]
 
       if(!dataAccess){
-        // DATA OFF — show raw table, no narrative
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({
-          id:`m${Date.now()}a`,role:'assistant',
-          text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
-          tableData:{rows:resultRows.slice(0,20),fields:resultFields},
-          followUps:[]
-        }))
+        // DATA OFF — return raw table results, no narrative
+        if(resultRows.length===0){
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found.'}))
+        } else {
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({
+            id:`m${Date.now()}a`,role:'assistant',
+            text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
+            tableData:{rows:resultRows.slice(0,20),fields:resultFields}
+          }))
+        }
         return
       }
 
-      // DATA ON — ask the AI to read the real data and respond like an analyst
-      const nRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          narrativeOnly:true,
-          question:q,
-          tableName:table.name,
-          fields:resultFields,
-          rows:resultRows.slice(0,20)
-        })})
-      const nData=await nRes.json()
+      // DATA ON — ask Anthropic to narrate the results in plain English
+      if(resultRows.length===0){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'I didn\'t find any matching results for that.'}))
+        return
+      }
 
-      setChatMsgs(p=>p.filter(m=>!m.loading).concat({
-        id:`m${Date.now()}a`,role:'assistant',
-        text:nData.answer||'Here are the results.',
-        followUps:(nData.followUps||[]).slice(0,3)
-      }))
+      // Build a compact data summary to pass as context
+      const dataSummary=resultRows.slice(0,15).map((r:any)=>
+        resultFields.map((f:string)=>`${f}=${r[f]}`).join(', ')
+      ).join(' | ')
+
+      // Second call: ask for a conversational sentence answer
+      const narrativeRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          question:q,
+          conversationContext:`You are answering a question about data from the "${table.name}" table. The query returned ${resultRows.length} row(s). Here is the data: ${dataSummary}. Answer the user's question in 1-2 natural conversational sentences using the actual names and numbers from the data. Do not use bullet points or lists. Sound like a helpful human analyst.`
+        })})
+      const nData=await narrativeRes.json()
+
+      // The narrative call may come back as rows (if it ran a query) or as a text response
+      // We check for a text-like single-row result first
+      let narrative=''
+      if(nData.rows?.length===1){
+        const firstRow=nData.rows[0]
+        const vals=Object.values(firstRow)
+        if(vals.length===1&&typeof vals[0]==='string'&&(vals[0] as string).length>20){
+          narrative=vals[0] as string
+        }
+      }
+      // Fallback: build a clear sentence from the actual data ourselves
+      if(!narrative){
+        if(resultRows.length===1){
+          const row=resultRows[0]
+          narrative=`Based on the data: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${row[f]}`).join(', ')}.`
+        } else {
+          narrative=`I found ${resultRows.length} results. The top result: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${resultRows[0][f]}`).join(', ')}.`
+        }
+      }
+
+      // Generate 2-3 contextual follow-up suggestions
+      const followUps:string[]=[]
+      if(resultRows.length>0){
+        const flds=resultFields.slice(0,3).join(', ')
+        if(resultRows.length===1) followUps.push(`Show all ${table.name}`,`What else is notable here?`)
+        else{
+          followUps.push(`What's the average?`)
+          if(resultFields.some((f:string)=>f.toLowerCase().includes('date')||f.toLowerCase().includes('month'))) followUps.push('Show the trend over time')
+          else followUps.push(`Show the bottom 5 instead`)
+          if(resultRows.length>5) followUps.push(`Filter to just the top 3`)
+        }
+      }
+      setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:narrative,followUps:followUps.slice(0,3)}))
 
     }catch(e:any){
       setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:'Something went wrong. Please try again.'}))
@@ -2952,12 +3638,12 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
                           </div>
                         </div>
                         :<div style={{display:'flex',flexDirection:'column',gap:5,maxWidth:'95%'}}>
-                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',overflowWrap:'anywhere'}}>{msg.text}</div>
+                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',whiteSpace:'pre-wrap'}}>{msg.text}</div>
                           {msg.followUps&&msg.followUps.length>0&&(
                             <div style={{display:'flex',flexWrap:'wrap',gap:5,paddingLeft:2}}>
                               {msg.followUps.map((s,i)=>(
                                 <button key={i} onClick={()=>{setChatInput(s);setTimeout(()=>sendChat(),50)}}
-                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}
+                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}
                                   onMouseOver={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}}
                                   onMouseOut={e=>{e.currentTarget.style.borderColor=C.cardBorder;e.currentTarget.style.color=C.textMuted}}>
                                   {s}
@@ -3210,24 +3896,95 @@ function AddDatabaseModal({onClose}:{onClose:()=>void}) {
 }
 
 
-function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
-  const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
-  const USERS=[
-    {name:'Mo Rasul',email:'mo@northwind.com',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
-    {name:'Sarah Chen',email:'sarah@northwind.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
-    {name:'James Park',email:'james@northwind.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
-  ]
-  const ROLES=[
-    {role:'Admin',desc:'Full access — manage settings, users, data, and all queries',color:C.accent},
-    {role:'Editor',desc:'Can query, build dashboards, run reports, and edit grid data',color:'#3B82F6'},
-    {role:'Viewer',desc:'Read-only — can query and view dashboards but cannot edit data',color:'#8B5CF6'},
-  ]
+function ChangePasswordModal({onClose}:{onClose:()=>void}) {
+  const [current,setCurrent]=useState('')
+  const [next,setNext]=useState('')
+  const [confirm,setConfirm]=useState('')
+  const [loading,setLoading]=useState(false)
+  const [error,setError]=useState('')
+  const [success,setSuccess]=useState(false)
+
+  const save=async()=>{
+    if(!current||!next||!confirm){setError('All fields required');return}
+    if(next!==confirm){setError('New passwords do not match');return}
+    if(next.length<8){setError('Password must be at least 8 characters');return}
+    setLoading(true);setError('')
+    try{
+      const res=await fetch('/api/auth/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({currentPassword:current,newPassword:next})})
+      const d=await res.json()
+      if(!res.ok)throw new Error(d.error||'Failed to update password')
+      setSuccess(true)
+      setTimeout(()=>onClose(),1800)
+    }catch(e:any){setError(e.message)}
+    finally{setLoading(false)}
+  }
+
+  const inp=(val:string,set:(v:string)=>void,ph:string)=>(
+    <input value={val} onChange={e=>set(e.target.value)} placeholder={ph} type="password"
+      style={{width:'100%',padding:'8px 11px',borderRadius:7,border:`1.5px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif'}}
+      onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
+  )
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.65)',zIndex:700,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'#fff',borderRadius:12,width:'100%',maxWidth:420,boxShadow:'0 24px 64px rgba(0,0,0,0.2)',overflow:'hidden',fontFamily:'Inter,sans-serif'}}>
+        <div style={{padding:'15px 20px',borderBottom:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <span style={{fontWeight:700,fontSize:15,color:C.text}}>Change password</span>
+          <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,color:C.textLight,cursor:'pointer'}}>×</button>
+        </div>
+        <div style={{padding:'20px',display:'flex',flexDirection:'column',gap:13}}>
+          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Current password</div>{inp(current,setCurrent,'••••••••')}</div>
+          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>New password</div>{inp(next,setNext,'min. 8 characters')}</div>
+          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Confirm new password</div>{inp(confirm,setConfirm,'repeat new password')}</div>
+          {error&&<div style={{padding:'9px 12px',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:7,fontSize:13,color:C.danger}}>{error}</div>}
+          {success&&<div style={{padding:'9px 12px',background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:7,fontSize:13,color:C.accent,fontWeight:600}}>✓ Password updated successfully</div>}
+        </div>
+        <div style={{padding:'12px 20px',borderTop:`1px solid ${C.cardBorder}`,background:'#FAFAFA',display:'flex',gap:8,justifyContent:'flex-end'}}>
+          <button onClick={onClose} style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 16px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
+          <button onClick={save} disabled={loading||success} style={{background:loading||success?'#E5E7EB':C.accent,color:loading||success?C.textLight:'#fff',border:'none',borderRadius:7,padding:'8px 20px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+            {loading?'Saving…':success?'Saved ✓':'Update password'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AdminPage({dataAccess,setDataAccess,onReplayTour,hasDb=false,currentUser,activeTables=[]}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void,hasDb?:boolean,currentUser?:any,activeTables?:any[]}) {
+  const [queryCount,setQueryCount]=useState<number|null>(null)
+  const [showChangePassword,setShowChangePassword]=useState(false)
+  const [teamUsers,setTeamUsers]=useState<any[]>([])
+  const [showAddDB,setShowAddDB]=useState(false)
   const [inviteEmail,setInviteEmail]=useState('')
   const [inviteRole,setInviteRole]=useState('Viewer')
   const [showInvite,setShowInvite]=useState(false)
-  const [showAddDB,setShowAddDB]=useState(false)
 
-  const usedPct=Math.round((PLAN_LIMITS.used/PLAN_LIMITS.queries)*100)
+  const PLAN_LIMITS_MAP:Record<string,{queries:number,seats:number,dbs:number,resetDate:string}>={
+    starter:{queries:500,seats:5,dbs:1,resetDate:'monthly'},
+    growth:{queries:2000,seats:17,dbs:3,resetDate:'monthly'},
+    scale:{queries:10000,seats:20,dbs:10,resetDate:'monthly'},
+  }
+  const plan=(currentUser?.plan||'starter').toLowerCase()
+  const PLAN_LIMITS=PLAN_LIMITS_MAP[plan]||PLAN_LIMITS_MAP.starter
+
+  // Load real query count
+  useEffect(()=>{
+    fetch('/api/usage').then(r=>r.json()).then(d=>setQueryCount(d.count||0)).catch(()=>setQueryCount(0))
+  },[])
+
+  // Load real team members
+  useEffect(()=>{
+    fetch('/api/team').then(r=>r.json()).then(d=>{if(d.users)setTeamUsers(d.users)}).catch(()=>{})
+  },[])
+
+  const used=queryCount??0
+  const usedPct=Math.round((used/PLAN_LIMITS.queries)*100)
+
+  const ROLES=[
+    {role:'Admin',desc:'Full access — manage settings, users, data, and all queries',color:C.accent},
+    {role:'Analyst',desc:'Can query, build dashboards, run reports, and edit grid data',color:'#3B82F6'},
+    {role:'Viewer',desc:'Read-only — can query and view dashboards but cannot edit data',color:'#8B5CF6'},
+  ]
 
   return(
     <div style={{flex:1,overflowY:'auto',background:C.bg}}>
@@ -3245,7 +4002,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
           <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
             <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Usage this cycle</div>
             <div style={{display:'flex',alignItems:'flex-end',gap:6,marginBottom:10}}>
-              <span style={{fontSize:36,fontWeight:800,color:C.text,letterSpacing:'-1px',lineHeight:1}}>{PLAN_LIMITS.used}</span>
+              <span style={{fontSize:36,fontWeight:800,color:C.text,letterSpacing:'-1px',lineHeight:1}}>{used}</span>
               <span style={{fontSize:14,color:C.textLight,marginBottom:4}}>/ {PLAN_LIMITS.queries} queries</span>
             </div>
             <div style={{height:6,background:'#E5E7EB',borderRadius:3,overflow:'hidden',marginBottom:8}}>
@@ -3258,10 +4015,10 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
           <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
             <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Plan</div>
             <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-              <div style={{fontSize:22,fontWeight:800,color:C.text}}>Starter</div>
+              <div style={{fontSize:22,fontWeight:800,color:C.text,textTransform:'capitalize'}}>{currentUser?.plan||'Starter'}</div>
               <span style={{fontSize:11,padding:'2px 8px',borderRadius:4,background:C.accentBg,color:C.accent,fontWeight:700,border:`1px solid ${C.greenBorder}`}}>Active</span>
             </div>
-            {[['Queries / month','500'],['Team seats','5'],['Databases','1'],['Data access AI','Included']].map(([k,v])=>(
+            {[['Queries / month',String(PLAN_LIMITS.queries)],['Team seats',String(PLAN_LIMITS.seats)],['Databases',String(PLAN_LIMITS.dbs)],['Data access AI','Included']].map(([k,v])=>(
               <div key={k} style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
                 <span style={{fontSize:12.5,color:C.textMuted}}>{k}</span>
                 <span style={{fontSize:12.5,fontWeight:600,color:C.text}}>{v}</span>
@@ -3296,10 +4053,13 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
         <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
             <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Team members</div>
-            <button onClick={()=>setShowInvite(s=>!s)}
-              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Invite</button>
+            {(currentUser?.role==='admin'||currentUser?.role==='analyst')&&<button onClick={()=>setShowInvite(s=>!s)}
+              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Invite</button>}
           </div>
-          {showInvite&&(
+          {(currentUser?.role==='viewer')&&(
+            <div style={{padding:'12px 14px',background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.textMuted,marginBottom:12}}>You're a viewer on this workspace. Contact your admin to change your role.</div>
+          )}
+          {(currentUser?.role!=='viewer')&&showInvite&&(
             <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:8,padding:'14px 16px',marginBottom:16,display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:200}}>
                 <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Email</div>
@@ -3310,13 +4070,13 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
                 <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Role</div>
                 <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)}
                   style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
-                  {['Viewer','Editor','Admin'].map(r=><option key={r}>{r}</option>)}
+                  {['Viewer','Analyst','Admin'].map(r=><option key={r}>{r}</option>)}
                 </select>
               </div>
               <InviteButton email={inviteEmail} role={inviteRole} onDone={()=>{setShowInvite(false);setInviteEmail('')}}/>
             </div>
           )}
-          <table style={{width:'100%',borderCollapse:'collapse'}}>
+          {currentUser?.role!=='viewer'&&<table style={{width:'100%',borderCollapse:'collapse'}}>
             <thead>
               <tr style={{borderBottom:`2px solid ${C.cardBorder}`}}>
                 {['Member','Role','Status','Last active','Queries this cycle'].map(h=>(
@@ -3325,7 +4085,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
               </tr>
             </thead>
             <tbody>
-              {USERS.map((u,i)=>(
+              {(teamUsers.length>0?teamUsers:[{name:currentUser?.name||'—',email:currentUser?.email||'—',role:currentUser?.role||'admin',status:'active',last_seen:null,initials:(currentUser?.name||'??').split(' ').map((n:string)=>n[0]).join('').toUpperCase().slice(0,2)}]).map((u:any,i:number)=>(
                 <tr key={u.email} style={{borderBottom:`1px solid #F1F5F9`,background:i%2===0?'#fff':'#FAFCFE'}}>
                   <td style={{padding:'10px 10px'}}>
                     <div style={{display:'flex',alignItems:'center',gap:10}}>
@@ -3338,17 +4098,17 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
                   </td>
                   <td style={{padding:'10px 10px'}}>
                     <span style={{fontSize:12,padding:'2px 8px',borderRadius:4,fontWeight:600,
-                      background:u.role==='Admin'?C.accentBg:u.role==='Editor'?'#EFF6FF':'#F5F3FF',
-                      color:u.role==='Admin'?C.accent:u.role==='Editor'?'#3B82F6':'#8B5CF6',
-                      border:`1px solid ${u.role==='Admin'?C.greenBorder:u.role==='Editor'?'#BFDBFE':'#DDD6FE'}`}}>{u.role}</span>
+                      background:u.role==='admin'||u.role==='Admin'?C.accentBg:u.role==='analyst'||u.role==='Analyst'?'#EFF6FF':'#F5F3FF',
+                      color:u.role==='admin'||u.role==='Admin'?C.accent:u.role==='analyst'||u.role==='Analyst'?'#3B82F6':'#8B5CF6',
+                      border:`1px solid ${u.role==='admin'||u.role==='Admin'?C.greenBorder:u.role==='analyst'||u.role==='Analyst'?'#BFDBFE':'#DDD6FE'}`}}>{u.role}</span>
                   </td>
                   <td style={{padding:'10px 10px'}}><div style={{display:'flex',alignItems:'center',gap:5}}><div style={{width:6,height:6,borderRadius:'50%',background:u.status==='Active'?C.success:'#CBD5E1'}}/><span style={{fontSize:12.5,color:C.text}}>{u.status}</span></div></td>
-                  <td style={{padding:'10px 10px',fontSize:12.5,color:C.textMuted}}>{u.lastSeen}</td>
+                  <td style={{padding:'10px 10px',fontSize:12.5,color:C.textMuted}}>{u.last_seen?new Date(u.last_seen).toLocaleDateString():u.lastSeen||'Never'}</td>
                   <td style={{padding:'10px 10px',fontFamily:"'JetBrains Mono'",fontSize:12.5,color:C.accentDark,fontWeight:500}}>{u.queries}</td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table>}
         </div>
 
         {/* Role permissions */}
@@ -3372,7 +4132,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
               style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add database</button>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-            {[['Database','Northwind Demo'],['Host','demo.supabase.co'],['Status','Connected'],['Tables','8 tables'],['Last synced','Just now'],['Plan','Demo — read only']].map(([k,v])=>(
+            {[['Database',hasDb?'Connected':'Not connected'],['Status',hasDb?'Connected':'Pending setup'],['Plan',currentUser?.role||'—']].map(([k,v])=>(
               <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
                 <span style={{fontSize:12.5,color:C.textMuted}}>{k}</span>
                 <span style={{fontSize:12.5,fontWeight:600,color:k==='Status'?C.success:C.text}}>{v}</span>
@@ -3386,7 +4146,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
           <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
             <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>System health</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:10,marginBottom:14}}>
-              {[['Queries Run','127','This cycle'],['Tables','8/8','All healthy'],['AI Response','Active','Via Qwezy AI'],['Members','3','Demo']].map(([l,v,s])=>(
+              {[['Queries Run',String(used||0),'This cycle'],['Tables',hasDb?'Connected':'None',''],['AI Response','Active','Via Qwezy AI'],['Members',String(teamUsers.length||1),'Your team']].map(([l,v,s])=>(
                 <div key={l} style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:'11px 13px'}}>
                   <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>{l}</div>
                   <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:1}}>{v}</div>
@@ -3397,7 +4157,8 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
               <div style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:12}}>
                 <div style={{fontWeight:600,fontSize:13,color:C.text,marginBottom:10}}>Table Health</div>
-                {TABLES.map((t,i)=>(
+                {!hasDb&&<div style={{fontSize:12.5,color:C.textLight,padding:'12px 0'}}>No database connected yet</div>}
+                {hasDb&&activeTables.slice(0,8).map((t:any,i:number)=>(
                   <div key={t.name} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
                     <span style={{fontFamily:"'JetBrains Mono'",fontSize:10,color:C.text,width:90,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}</span>
                     <div style={{flex:1,height:4,background:'#E5E7EB',borderRadius:3,overflow:'hidden'}}>
@@ -3419,6 +4180,20 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
             </div>
           </div>
 
+        {/* Account */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Account</div>
+          <button onClick={()=>setShowChangePassword(true)}
+            style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',borderRadius:7,border:`1px solid ${C.cardBorder}`,background:'#F8FAFD',cursor:'pointer',fontFamily:'Inter,sans-serif',width:'100%',textAlign:'left',marginBottom:8}}
+            onMouseOver={e=>e.currentTarget.style.background=C.accentBg} onMouseOut={e=>e.currentTarget.style.background='#F8FAFD'}>
+            <span style={{fontSize:18}}>🔑</span>
+            <div>
+              <div style={{fontSize:13,fontWeight:600,color:C.text}}>Change password</div>
+              <div style={{fontSize:12,color:C.textMuted}}>Update your login password</div>
+            </div>
+          </button>
+        </div>
+
         {/* Help */}
         <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
           <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Help</div>
@@ -3434,6 +4209,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
         </div>
 
       </div>
+      {showChangePassword&&<ChangePasswordModal onClose={()=>setShowChangePassword(false)}/>}
     </div>
   )
 }
@@ -3450,7 +4226,12 @@ export default function Dashboard() {
     const check=async()=>{
       try{
         const res=await fetch('/api/company/status')
-        if(res.ok){const d=await res.json();if(d.needs_onboarding)setShowConnectPrompt(true)}
+        if(res.ok){
+          const d=await res.json()
+          if(d.needs_onboarding)setShowConnectPrompt(true)
+          setHasDb(d.has_db||false)
+          setIsCompanyUser(d.needs_onboarding||d.has_db) // has a company account
+        }
       }catch{}
     }
     check()
@@ -3474,11 +4255,46 @@ export default function Dashboard() {
   const [gridTable,setGridTable]=useState<any>(null)
   const [showAdmin,setShowAdmin]=useState(false)
   const [showConnectPrompt,setShowConnectPrompt]=useState(false)
+  const [hasDb,setHasDb]=useState(false)
+  const [isCompanyUser,setIsCompanyUser]=useState(false)
   const [infoPanel,setInfoPanel]=useState<{table:any,x:number,y:number}|null>(null)
   const [dataAccess,setDataAccess]=useState(true)
+  const [currentUser,setCurrentUser]=useState<any>(null)
   const dragSide=useRef(false)
 
   useEffect(()=>{try{sessionStorage.setItem('qwezy_tab',tab)}catch{}},[tab])
+
+  // Load current user + company name
+  useEffect(()=>{
+    fetch('/api/auth').then(r=>r.json()).then(async d=>{
+      if(d.user){
+        if(d.user.company_id){
+          try{
+            const cr=await fetch('/api/company/status')
+            if(cr.ok){const cd=await cr.json();d.user.companyName=cd.company_name||''}
+          }catch{}
+        }
+        setCurrentUser(d.user)
+      }
+    }).catch(()=>{})
+  },[])
+
+  // Load dynamic schema when DB is connected
+  const [dynamicTables,setDynamicTables]=useState<any[]>([])
+  const [schemaLoading,setSchemaLoading]=useState(false)
+  useEffect(()=>{
+    if(!hasDb)return
+    setSchemaLoading(true)
+    fetch('/api/schema').then(r=>r.json()).then(d=>{
+      if(d.tables&&d.tables.length>0)setDynamicTables(d.tables)
+    }).catch(()=>{}).finally(()=>setSchemaLoading(false))
+  },[hasDb])
+
+  // Active tables — dynamic if available, else hardcoded TABLES for demo
+  const activeTables=dynamicTables.length>0?dynamicTables:TABLES
+  // Make activeTables accessible to buildSQL (module-level function)
+  useEffect(()=>{try{(window as any).__qwezyTables=activeTables}catch{}},[activeTables])
+
 
   const saveReportResult=(id:string,result:ReportResult)=>{
     reportCache[id]=result
@@ -3532,7 +4348,7 @@ export default function Dashboard() {
             <span style={{color:'#fff',fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:10}}>{'{ }'}</span>
           </div>
           <span style={{fontWeight:700,fontSize:14,color:'#fff',letterSpacing:'-0.2px'}}>Qwezy</span>
-          <span style={{fontSize:11,color:C.navText,padding:'2px 6px',background:'rgba(16,185,129,0.15)',borderRadius:4,fontWeight:600}}>Demo</span>
+          {currentUser?.name&&<span style={{fontSize:11,color:C.navText,padding:'2px 6px',background:'rgba(16,185,129,0.15)',borderRadius:4,fontWeight:600}}>{currentUser.name}</span>}
         </div>
         <div style={{display:'flex',gap:1,flex:1,overflow:'hidden'}}>
           {TABS.map(t=>(
@@ -3551,7 +4367,7 @@ export default function Dashboard() {
       <div style={{flex:1,display:'flex',overflow:'hidden',position:'relative'}}>
 
         {/* Sidebar */}
-        <aside style={{width:sideCollapsed?24:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:'width .15s',position:'relative'}}>
+        <aside style={{width:sideCollapsed?0:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:sideCollapsed?'width .15s':'none',position:'relative'}}>
           {!sideCollapsed&&(
             <>
 
@@ -3561,7 +4377,14 @@ export default function Dashboard() {
               </div>
 
               <div style={{flex:1,overflowY:'auto',padding:'5px 7px'}}>
-                {TABLES.map(tbl => (
+                {isCompanyUser&&!hasDb&&(
+                  <div style={{padding:'24px 12px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:10}}>
+                    <div style={{fontSize:28,opacity:0.4}}>🔌</div>
+                    <div style={{fontSize:12,color:C.textMuted,lineHeight:1.6}}>No database connected</div>
+                    <button onClick={()=>setShowConnectPrompt(true)} style={{fontSize:11.5,padding:'4px 12px',borderRadius:5,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>Connect →</button>
+                  </div>
+                )}
+                {(isCompanyUser&&!hasDb?[]:activeTables).map(tbl => (
                   <div
                     key={tbl.name}
                     style={{
@@ -3573,7 +4396,7 @@ export default function Dashboard() {
                       marginBottom:2,
                       cursor:'pointer'
                     }}
-                    onClick={() => gridTable ? setGridTable(tbl) : setDrawerTable(tbl)}
+                    onClick={() => setDrawerTable(tbl)}
                     onDoubleClick={() => setGridTable(tbl)}
                     onContextMenu={e=>{e.preventDefault();setInfoPanel({table:tbl,x:e.clientX,y:e.clientY})}}
                     onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'}
@@ -3614,7 +4437,7 @@ export default function Dashboard() {
 
               
               <div style={{padding:'9px 11px',borderTop:`1px solid ${C.sidebarBorder}`,background:'#FAFCFE'}}>
-                {[['Tables','8/8'],['Database','Northwind'],['Status','Connected']].map(([k,v])=>(
+                {[['Tables',isCompanyUser?(hasDb?'Connected':'None'):'8/8'],['Database',isCompanyUser?(currentUser?.companyName||'Your DB'):'Northwind'],['Status',isCompanyUser?(hasDb?'Connected':'Pending'):'Connected']].map(([k,v])=>(
                   <div key={k} style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                     <span style={{fontSize:10.5,color:C.textLight}}>{k}</span>
                     <span style={{fontSize:10.5,fontWeight:600,color:k==='Status'?C.success:C.text}}>{v}</span>
@@ -3628,8 +4451,7 @@ export default function Dashboard() {
             </>
           )}
           {sideCollapsed&&(
-            <button onClick={()=>setSideCollapsed(false)} title="Expand sidebar"
-              style={{width:'100%',flex:1,background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',paddingTop:12}}>›</button>
+            <button onClick={()=>setSideCollapsed(false)} style={{width:'100%',height:48,background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,borderBottom:`1px solid ${C.sidebarBorder}`}}>›</button>
           )}
         </aside>
 
@@ -3637,13 +4459,24 @@ export default function Dashboard() {
         <main style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           {gridTable&&<TableGridView table={gridTable} onClose={()=>setGridTable(null)} dataAccess={dataAccess}/>}
           {!gridTable&&<>
-          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>}
-          {tab==='builder'&&<BuilderTab/>}
-          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
-          {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})}/>}
-          {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult}/></div>}
+          {/* QwezyTab always mounted — never unmounts so conversations are never lost */}
+          <div style={{display:tab==='ask'?'flex':'none',flex:1,overflow:'hidden',flexDirection:'column',position:'relative'}}>
+            <QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>
+            {isCompanyUser&&!hasDb&&(
+              <div style={{position:'absolute',inset:0,background:'rgba(246,249,252,0.96)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',zIndex:10}}>
+                <div style={{fontSize:36,marginBottom:16}}>🔌</div>
+                <div style={{fontSize:18,fontWeight:700,color:'#0F1923',marginBottom:8,letterSpacing:'-0.3px'}}>Connect your database first</div>
+                <div style={{fontSize:14,color:'#4B6358',lineHeight:1.65,marginBottom:24,textAlign:'center',maxWidth:360}}>Once your database is connected, you can ask questions in plain English and get instant answers from your live data.</div>
+                <button onClick={()=>setShowConnectPrompt(true)} style={{background:'#059669',color:'#fff',border:'none',borderRadius:8,padding:'11px 26px',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Connect database →</button>
+              </div>
+            )}
+          </div>
+          {tab==='builder'&&<BuilderTab isCompanyUser={isCompanyUser} hasDb={hasDb} onConnect={()=>setShowConnectPrompt(true)} tables={activeTables}/>}
+          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult} isCompanyUser={isCompanyUser} hasDb={hasDb} onConnect={()=>setShowConnectPrompt(true)} activeTables={activeTables} userRole={currentUser?.role||'admin'} currentUser={currentUser}/>}
+          {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})} isCompanyUser={isCompanyUser} hasDb={hasDb} companyName={currentUser?.companyName||''} tables={activeTables}/>}
+          {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult} currentUser={currentUser} hasDb={hasDb}/></div>}
           {tab==='admin'&&(
-            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}}/>
+            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}} hasDb={hasDb} currentUser={currentUser} activeTables={activeTables}/>
           )}
 
           </>}
@@ -3652,10 +4485,7 @@ export default function Dashboard() {
 
       {/* Overlays */}
       {infoPanel&&<TableInfoPanel table={infoPanel.table} x={infoPanel.x} y={infoPanel.y} onClose={()=>setInfoPanel(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setInfoPanel(null)}} onGrid={t=>{setGridTable(t);setInfoPanel(null)}} onDrawer={t=>{setDrawerTable(t);setInfoPanel(null)}}/> }
-      {drawerTable&&<>
-        <div onClick={()=>setDrawerTable(null)} style={{position:'fixed',inset:0,zIndex:199}}/>
-        <TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>
-      </>}
+      {drawerTable&&<TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
       {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}} onGrid={t=>{setGridTable(t);setContextMenu(null)}}/>}
 

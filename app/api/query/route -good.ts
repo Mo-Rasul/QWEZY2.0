@@ -99,8 +99,14 @@ async function getSystemPrompt(req: NextRequest): Promise<string> {
 
     if (!company?.db_connection_string) return NORTHWIND_PROMPT
 
-    // If company has a custom tables config use it, otherwise use Ahmed & Rasul prompt
-    return company.tables_config?.system_prompt || AHMED_RASUL_PROMPT
+    // Northwind demo DB — always use Northwind prompt regardless of company
+    if (company.db_connection_string === process.env.DEMO_DATABASE_URL) return NORTHWIND_PROMPT
+
+    // Custom system prompt configured for this company
+    if (company.tables_config?.system_prompt) return company.tables_config.system_prompt
+
+    // Generic fallback for companies without a configured prompt yet
+    return `You are Qwezy, a SQL assistant. Generate valid PostgreSQL SQL for the user's question. Return ONLY a JSON object: {"sql": "SELECT ...", "confidence": "high", "assumptions": []}`
   } catch {
     return NORTHWIND_PROMPT
   }

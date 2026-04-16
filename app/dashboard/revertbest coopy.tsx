@@ -679,12 +679,6 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
         return
       }
 
-      if(data.answer){
-        const textMsg:ConvMessage={id:`m${Date.now()}a`,role:'assistant',content:data.answer,confidence:data.confidence,assumptions:data.assumptions,timestamp:new Date()}
-        setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,textMsg],updatedAt:new Date()}:c))
-        return
-      }
-
       const assistantMsg:ConvMessage={
         id:`m${Date.now()}a`,role:'assistant',
         content:`Returned ${data.rows?.length||0} rows in ${data.duration_ms}ms`,
@@ -2684,68 +2678,89 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
       {id:`m${Date.now()}t`,role:'assistant',text:'',loading:true}
     ])
     setChatLoading(true)
-
-    // Build conversation history in the format buildMessages() in route.ts expects
-    const prevMsgs=chatMsgs.filter(m=>!m.loading)
-    const convCtx=prevMsgs.length>0
-      ?`Previous messages:\n${prevMsgs.slice(-6).map(m=>`${m.role}: ${m.text}`).join('\n')}`
-      :undefined
-
     try{
-      const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+      // Always run the query first to get real data
+      const qRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
-          // Embed table context directly in the question so Claude knows the schema
-          question:`The user is viewing the "${table.name}" table (columns: ${fields.join(', ')}, ${rows.length} rows loaded). Question: ${q}`,
-          conversationContext:convCtx
+          question:`About the ${table.name} table: ${q}`,
+          conversationContext:`The user is viewing the ${table.name} table. Columns: ${fields.join(', ')}. ${rows.length} rows loaded.`
         })})
-      const data=await res.json()
+      const qData=await qRes.json()
 
-      if(data.error){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${data.error}`}))
+      if(qData.error){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${qData.error}`}))
         return
       }
 
-      // Text-type response (explanation, definition, non-queryable question)
-      if(data.answer){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:data.answer}))
-        return
-      }
-
-      const resultRows:any[]=data.rows||[]
-      const resultFields:string[]=data.fields||[]
-
-      if(resultRows.length===0){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found for that query.'}))
-        return
-      }
+      const resultRows:any[]=qData.rows||[]
+      const resultFields:string[]=qData.fields||[]
 
       if(!dataAccess){
-        // DATA OFF — show raw table, no narrative
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({
-          id:`m${Date.now()}a`,role:'assistant',
-          text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
-          tableData:{rows:resultRows.slice(0,20),fields:resultFields},
-          followUps:[]
-        }))
+        // DATA OFF — return raw table results, no narrative
+        if(resultRows.length===0){
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found.'}))
+        } else {
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({
+            id:`m${Date.now()}a`,role:'assistant',
+            text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
+            tableData:{rows:resultRows.slice(0,20),fields:resultFields}
+          }))
+        }
         return
       }
 
-      // DATA ON — ask the AI to read the real data and respond like an analyst
-      const nRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          narrativeOnly:true,
-          question:q,
-          tableName:table.name,
-          fields:resultFields,
-          rows:resultRows.slice(0,20)
-        })})
-      const nData=await nRes.json()
+      // DATA ON — ask Anthropic to narrate the results in plain English
+      if(resultRows.length===0){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'I didn\'t find any matching results for that.'}))
+        return
+      }
 
-      setChatMsgs(p=>p.filter(m=>!m.loading).concat({
-        id:`m${Date.now()}a`,role:'assistant',
-        text:nData.answer||'Here are the results.',
-        followUps:(nData.followUps||[]).slice(0,3)
-      }))
+      // Build a compact data summary to pass as context
+      const dataSummary=resultRows.slice(0,15).map((r:any)=>
+        resultFields.map((f:string)=>`${f}=${r[f]}`).join(', ')
+      ).join(' | ')
+
+      // Second call: ask for a conversational sentence answer
+      const narrativeRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          question:q,
+          conversationContext:`You are answering a question about data from the "${table.name}" table. The query returned ${resultRows.length} row(s). Here is the data: ${dataSummary}. Answer the user's question in 1-2 natural conversational sentences using the actual names and numbers from the data. Do not use bullet points or lists. Sound like a helpful human analyst.`
+        })})
+      const nData=await narrativeRes.json()
+
+      // The narrative call may come back as rows (if it ran a query) or as a text response
+      // We check for a text-like single-row result first
+      let narrative=''
+      if(nData.rows?.length===1){
+        const firstRow=nData.rows[0]
+        const vals=Object.values(firstRow)
+        if(vals.length===1&&typeof vals[0]==='string'&&(vals[0] as string).length>20){
+          narrative=vals[0] as string
+        }
+      }
+      // Fallback: build a clear sentence from the actual data ourselves
+      if(!narrative){
+        if(resultRows.length===1){
+          const row=resultRows[0]
+          narrative=`Based on the data: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${row[f]}`).join(', ')}.`
+        } else {
+          narrative=`I found ${resultRows.length} results. The top result: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${resultRows[0][f]}`).join(', ')}.`
+        }
+      }
+
+      // Generate 2-3 contextual follow-up suggestions
+      const followUps:string[]=[]
+      if(resultRows.length>0){
+        const flds=resultFields.slice(0,3).join(', ')
+        if(resultRows.length===1) followUps.push(`Show all ${table.name}`,`What else is notable here?`)
+        else{
+          followUps.push(`What's the average?`)
+          if(resultFields.some((f:string)=>f.toLowerCase().includes('date')||f.toLowerCase().includes('month'))) followUps.push('Show the trend over time')
+          else followUps.push(`Show the bottom 5 instead`)
+          if(resultRows.length>5) followUps.push(`Filter to just the top 3`)
+        }
+      }
+      setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:narrative,followUps:followUps.slice(0,3)}))
 
     }catch(e:any){
       setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:'Something went wrong. Please try again.'}))
@@ -2952,12 +2967,12 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
                           </div>
                         </div>
                         :<div style={{display:'flex',flexDirection:'column',gap:5,maxWidth:'95%'}}>
-                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',overflowWrap:'anywhere'}}>{msg.text}</div>
+                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',whiteSpace:'pre-wrap'}}>{msg.text}</div>
                           {msg.followUps&&msg.followUps.length>0&&(
                             <div style={{display:'flex',flexWrap:'wrap',gap:5,paddingLeft:2}}>
                               {msg.followUps.map((s,i)=>(
                                 <button key={i} onClick={()=>{setChatInput(s);setTimeout(()=>sendChat(),50)}}
-                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}
+                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}
                                   onMouseOver={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}}
                                   onMouseOut={e=>{e.currentTarget.style.borderColor=C.cardBorder;e.currentTarget.style.color=C.textMuted}}>
                                   {s}
@@ -3213,9 +3228,9 @@ function AddDatabaseModal({onClose}:{onClose:()=>void}) {
 function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
   const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
   const USERS=[
-    {name:'Mo Rasul',email:'mo@northwind.com',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
-    {name:'Sarah Chen',email:'sarah@northwind.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
-    {name:'James Park',email:'james@northwind.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
+    {name:'Mo Rasul',email:'velo@demo.qwezy.io',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
+    {name:'Sarah Chen',email:'sarah@velo.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
+    {name:'James Park',email:'james@velo.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
   ]
   const ROLES=[
     {role:'Admin',desc:'Full access — manage settings, users, data, and all queries',color:C.accent},
@@ -3551,7 +3566,7 @@ export default function Dashboard() {
       <div style={{flex:1,display:'flex',overflow:'hidden',position:'relative'}}>
 
         {/* Sidebar */}
-        <aside style={{width:sideCollapsed?24:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:'width .15s',position:'relative'}}>
+        <aside style={{width:sideCollapsed?0:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:sideCollapsed?'width .15s':'none',position:'relative'}}>
           {!sideCollapsed&&(
             <>
 
@@ -3573,7 +3588,7 @@ export default function Dashboard() {
                       marginBottom:2,
                       cursor:'pointer'
                     }}
-                    onClick={() => gridTable ? setGridTable(tbl) : setDrawerTable(tbl)}
+                    onClick={() => setDrawerTable(tbl)}
                     onDoubleClick={() => setGridTable(tbl)}
                     onContextMenu={e=>{e.preventDefault();setInfoPanel({table:tbl,x:e.clientX,y:e.clientY})}}
                     onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'}
@@ -3628,8 +3643,7 @@ export default function Dashboard() {
             </>
           )}
           {sideCollapsed&&(
-            <button onClick={()=>setSideCollapsed(false)} title="Expand sidebar"
-              style={{width:'100%',flex:1,background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',paddingTop:12}}>›</button>
+            <button onClick={()=>setSideCollapsed(false)} style={{width:'100%',height:48,background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,borderBottom:`1px solid ${C.sidebarBorder}`}}>›</button>
           )}
         </aside>
 
@@ -3652,10 +3666,7 @@ export default function Dashboard() {
 
       {/* Overlays */}
       {infoPanel&&<TableInfoPanel table={infoPanel.table} x={infoPanel.x} y={infoPanel.y} onClose={()=>setInfoPanel(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setInfoPanel(null)}} onGrid={t=>{setGridTable(t);setInfoPanel(null)}} onDrawer={t=>{setDrawerTable(t);setInfoPanel(null)}}/> }
-      {drawerTable&&<>
-        <div onClick={()=>setDrawerTable(null)} style={{position:'fixed',inset:0,zIndex:199}}/>
-        <TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>
-      </>}
+      {drawerTable&&<TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
       {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}} onGrid={t=>{setGridTable(t);setContextMenu(null)}}/>}
 
