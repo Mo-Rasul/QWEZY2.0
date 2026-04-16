@@ -1423,8 +1423,8 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
 }
 
 // ── Reports Tab ───────────────────────────────────────────────────────────────
-function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,result:ReportResult)=>void}) {
-  const [reports,setReports]=useState(INITIAL_REPORTS as any[])
+function ReportsTab({sharedResults,onResultSaved,isDemo}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,result:ReportResult)=>void,isDemo:boolean}) {
+  const [reports,setReports]=useState(()=>isDemo?INITIAL_REPORTS as any[]:[])
   const [showNew,setShowNew]=useState(false)
   const [running,setRunning]=useState<string|null>(null)
   const [expanded,setExpanded]=useState<string|null>(null)
@@ -1509,7 +1509,20 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
         </div>
       )}
 
-      {existingGroups.map(groupName=>{
+      {!isDemo&&reports.length===0&&!showNew&&(
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'60px 20px',textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:16}}>📊</div>
+          <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:8}}>No reports yet</div>
+          <div style={{fontSize:13.5,color:C.textMuted,lineHeight:1.65,maxWidth:380,marginBottom:24}}>
+            Connect your database first, then create reports that run on a schedule and land in your inbox.
+          </div>
+          <button onClick={()=>window.location.href='/onboarding'}
+            style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
+            Connect database →
+          </button>
+        </div>
+      )}
+      {(isDemo||reports.length>0)&&existingGroups.map(groupName=>{
         const groupReports=reports.filter((r:any)=>(r.group||'General')===groupName)
         return(
           <div key={groupName} style={{marginBottom:20}}>
@@ -1834,8 +1847,8 @@ function AlertCard({alert}:{alert:AlertDef}) {
   )
 }
 
-function AlertsTab() {
-  const [alerts,setAlerts]=useState<AlertDef[]>(DEFAULT_ALERTS)
+function AlertsTab({isDemo}:{isDemo:boolean}) {
+  const [alerts,setAlerts]=useState<AlertDef[]>(()=>isDemo?DEFAULT_ALERTS:[])
   const [showAdd,setShowAdd]=useState(false)
   const [newAlert,setNewAlert]=useState({name:'',description:'',sql:'',severity:'warning' as 'warning'|'critical'})
 
@@ -2395,7 +2408,7 @@ function PresetCard({preset,onEdit,fullWidth=false}:{preset:any,onEdit:()=>void,
 
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
-function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void}) {
+function DashboardTab({sharedResults,onResultSaved,isDemo}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void,isDemo:boolean}) {
   const [pages,setPages]=useState<DashPage[]>([{id:'overview',name:'Overview',views:[]}])
   const [activePage,setActivePage]=useState('overview')
   const [renamingPage,setRenamingPage]=useState<string|null>(null)
@@ -2481,7 +2494,7 @@ function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string
 
       {/* Canvas */}
       <div style={{flex:1,overflowY:'auto',padding:20}}>
-        {showAlerts&&<AlertsTab/>}
+        {showAlerts&&<AlertsTab isDemo={isDemo}/>}
         {!showAlerts&&isOverview&&(
           <>
             <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
@@ -2685,67 +2698,200 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
     ])
     setChatLoading(true)
 
-    // Build conversation history in the format buildMessages() in route.ts expects
-    const prevMsgs=chatMsgs.filter(m=>!m.loading)
-    const convCtx=prevMsgs.length>0
-      ?`Previous messages:\n${prevMsgs.slice(-6).map(m=>`${m.role}: ${m.text}`).join('\n')}`
-      :undefined
+    // Helper: skip fields that are meaningless as metrics (IDs, sequential indices)
+    const isIdField=(f:string)=>{
+      if(/_id$/i.test(f)||/^id$/i.test(f)) return true
+      // Detect sequential 1,2,3...N pattern
+      const vals=rows.map(r=>Number(r[f])).filter(n=>!isNaN(n)&&Number.isInteger(n))
+      if(vals.length<3) return false
+      const sorted=[...vals].sort((a,b)=>a-b)
+      return sorted[0]>=1&&sorted[sorted.length-1]===vals.length&&
+        sorted.every((n,i)=>i===0||n===sorted[i-1]+1)
+    }
+    // Helper: format values for human-readable output
+    const fmtVal=(v:any):string=>{
+      if(typeof v==='string'&&/^\d{4}-\d{2}-\d{2}T/.test(v))
+        return new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+      if(typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)) return Number(v).toLocaleString()
+      return String(v??'')
+    }
+    const looksNumeric=(v:any)=>typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)
+    // Helper: pick best numeric field — prefer high-variance fields (real metrics) over FK enums (ship_via=1,2,3)
+    const bestNumField=(flds:string[])=>{
+      const candidates=flds.filter(f=>
+        !isIdField(f)&&!f.toLowerCase().includes('date')&&!f.toLowerCase().includes('time')&&
+        rows.length>0&&looksNumeric(rows[0][f])
+      )
+      // Sort by number of distinct values descending (more distinct = better real metric)
+      return candidates.sort((a,b)=>{
+        const da=new Set(rows.map(r=>r[a])).size
+        const db=new Set(rows.map(r=>r[b])).size
+        return db-da
+      })[0]
+    }
+    // Helper: pick best label field — must be a non-numeric string (e.g. city, company name)
+    const bestLabelField=(flds:string[],numF:string|undefined)=>flds.find(f=>
+      f!==numF&&!isIdField(f)&&!f.toLowerCase().includes('date')&&!f.toLowerCase().includes('time')&&
+      rows.length>0&&typeof rows[0][f]==='string'&&!looksNumeric(rows[0][f])
+    )
 
-    try{
-      const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          // Embed table context directly in the question so Claude knows the schema
-          question:`The user is viewing the "${table.name}" table (columns: ${fields.join(', ')}, ${rows.length} rows loaded). Question: ${q}`,
-          conversationContext:convCtx
-        })})
-      const data=await res.json()
+    // Detect meta/insight OR summary questions that should use loaded data, not SQL
+    const isMetaQ=/notable|recommend|metrics|what (else|other)|suggest|insights?|interesting|standout|highlight|summary|summarize|overview|describe this/i.test(q)
+    if(isMetaQ){
+      const numF=bestNumField(fields)
+      const labelF=bestLabelField(fields,numF)
+      const insights:string[]=[]
 
-      if(data.error){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${data.error}`}))
-        return
+      if(/summary|summarize|overview|describe/i.test(q)){
+        // Table summary: count, date range, top values
+        const dateF=fields.find(f=>f.toLowerCase().includes('date'))
+        const strFs=fields.filter(f=>!isIdField(f)&&rows.length>0&&typeof rows[0][f]==='string'&&!looksNumeric(rows[0][f])&&!f.toLowerCase().includes('date'))
+        insights.push(`The ${table.name} table has ${rows.length} rows loaded across ${fields.length} columns.`)
+        if(dateF){
+          const dates=rows.map(r=>r[dateF]).filter(Boolean).sort()
+          if(dates.length) insights.push(`Records span from ${fmtVal(dates[0])} to ${fmtVal(dates[dates.length-1])}.`)
+        }
+        if(numF&&rows.length>1){
+          const vals=rows.map(r=>Number(r[numF])).filter(n=>!isNaN(n))
+          const avg=vals.reduce((s,n)=>s+n,0)/vals.length
+          const mx=Math.max(...vals), mn=Math.min(...vals)
+          insights.push(`${numF.replace(/_/g,' ')} ranges from ${mn.toLocaleString()} to ${mx.toLocaleString()}, averaging ${avg.toFixed(2)}.`)
+        }
+        if(strFs.length){
+          const f=strFs[0]
+          const counts:Record<string,number>={};rows.forEach(r=>{const v=String(r[f]||'');counts[v]=(counts[v]||0)+1})
+          const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,3)
+          if(top.length) insights.push(`Most common ${f.replace(/_/g,' ')}: ${top.map(([k,n])=>`${k} (${n})`).join(', ')}.`)
+        }
+      } else {
+        // Recommend metrics
+        if(numF&&labelF&&rows.length>1){
+          const sorted=[...rows].sort((a,b)=>Number(b[numF])-Number(a[numF]))
+          const top=sorted[0], second=sorted[1], bot=sorted[sorted.length-1]
+          const avg=rows.reduce((s,r)=>s+Number(r[numF]||0),0)/rows.length
+          insights.push(`${fmtVal(top[labelF])} has the highest ${numF.replace(/_/g,' ')} at ${fmtVal(top[numF])}${second?`, followed by ${fmtVal(second[labelF])} at ${fmtVal(second[numF])}`  :''}.`)
+          if(bot[labelF]!==top[labelF]) insights.push(`${fmtVal(bot[labelF])} is the lowest at ${fmtVal(bot[numF])}.`)
+          insights.push(`Average ${numF.replace(/_/g,' ')} is ${avg.toFixed(2)}. You might also look at: breakdown by city or country, orders over time, or freight cost by shipper.`)
+        } else {
+          const meaningfulFields=fields.filter(f=>!isIdField(f))
+          insights.push(`This table has ${rows.length} rows. Key fields to explore: ${meaningfulFields.join(', ')}.`)
+          insights.push(`Try asking: "What are the top 10 by value?", "What is the date range?", or "What city appears most often?".`)
+        }
       }
-
-      // Text-type response (explanation, definition, non-queryable question)
-      if(data.answer){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:data.answer}))
-        return
-      }
-
-      const resultRows:any[]=data.rows||[]
-      const resultFields:string[]=data.fields||[]
-
-      if(resultRows.length===0){
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found for that query.'}))
-        return
-      }
-
-      if(!dataAccess){
-        // DATA OFF — show raw table, no narrative
-        setChatMsgs(p=>p.filter(m=>!m.loading).concat({
-          id:`m${Date.now()}a`,role:'assistant',
-          text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
-          tableData:{rows:resultRows.slice(0,20),fields:resultFields},
-          followUps:[]
-        }))
-        return
-      }
-
-      // DATA ON — ask the AI to read the real data and respond like an analyst
-      const nRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          narrativeOnly:true,
-          question:q,
-          tableName:table.name,
-          fields:resultFields,
-          rows:resultRows.slice(0,20)
-        })})
-      const nData=await nRes.json()
 
       setChatMsgs(p=>p.filter(m=>!m.loading).concat({
         id:`m${Date.now()}a`,role:'assistant',
-        text:nData.answer||'Here are the results.',
-        followUps:(nData.followUps||[]).slice(0,3)
+        text:insights.join(' '),
+        followUps:numF?[`What are the top 5 by ${numF.replace(/_/g,' ')}?`,`What is the average ${numF.replace(/_/g,' ')}?`,'Show the date range']
+          :['What are the top 10?','Show me distinct values','Show the date range']
       }))
+      setChatLoading(false)
+      return
+    }
+
+    try{
+      // Always run the query first to get real data
+      const qRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          question:`About the ${table.name} table: ${q}`,
+          conversationContext:`The user is viewing the ${table.name} table. Columns: ${fields.join(', ')}. ${rows.length} rows loaded.`
+        })})
+      const qData=await qRes.json()
+
+      if(qData.error){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:`I couldn't run that: ${qData.error}`}))
+        return
+      }
+
+      const resultRows:any[]=qData.rows||[]
+      const resultFields:string[]=qData.fields||[]
+
+      if(!dataAccess){
+        // DATA OFF — return raw table results, no narrative
+        if(resultRows.length===0){
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'No results found.'}))
+        } else {
+          setChatMsgs(p=>p.filter(m=>!m.loading).concat({
+            id:`m${Date.now()}a`,role:'assistant',
+            text:`${resultRows.length} row${resultRows.length!==1?'s':''} returned`,
+            tableData:{rows:resultRows.slice(0,20),fields:resultFields}
+          }))
+        }
+        return
+      }
+
+      // DATA ON — ask Anthropic to narrate the results in plain English
+      if(resultRows.length===0){
+        setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:'I didn\'t find any matching results for that.'}))
+        return
+      }
+
+      // Build a compact data summary to pass as context
+      const dataSummary=resultRows.slice(0,15).map((r:any)=>
+        resultFields.map((f:string)=>`${f}=${r[f]}`).join(', ')
+      ).join(' | ')
+
+      // Second call: ask for a conversational sentence answer
+      const narrativeRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          question:q,
+          conversationContext:`You are answering a question about data from the "${table.name}" table. The query returned ${resultRows.length} row(s). Here is the data: ${dataSummary}. Answer the user's question in 1-2 natural conversational sentences using the actual names and numbers from the data. Do not use bullet points or lists. Sound like a helpful human analyst.`
+        })})
+      const nData=await narrativeRes.json()
+
+      // The narrative call may come back as rows (if it ran a query) or as a text response
+      // We check for a text-like single-row result first
+      let narrative=''
+      if(nData.rows?.length===1){
+        const firstRow=nData.rows[0]
+        const vals=Object.values(firstRow)
+        if(vals.length===1&&typeof vals[0]==='string'&&(vals[0] as string).length>20){
+          narrative=vals[0] as string
+        }
+      }
+      // Fallback: build a human-friendly sentence from the actual data
+      if(!narrative){
+        const isIdF=(f:string)=>/_id$/i.test(f)||/^id$/i.test(f)
+        const fmt=(v:any)=>{
+          if(typeof v==='string'&&/^\d{4}-\d{2}-\d{2}T/.test(v))
+            return new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+          if(typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)) return Number(v).toLocaleString()
+          return String(v??'')
+        }
+        const looksNum=(v:any)=>typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)
+        // Pick best numeric field: most distinct values wins (avoids FK enums like ship_via=1,2,3)
+        const numCandidates=resultFields.filter(f=>!isIdF(f)&&!f.toLowerCase().includes('date')&&resultRows.length>0&&looksNum(resultRows[0][f]))
+        const numF=numCandidates.sort((a,b)=>new Set(resultRows.map(r=>r[b])).size-new Set(resultRows.map(r=>r[a])).size)[0]
+        // Pick best label field: non-numeric string
+        const labelF=resultFields.find(f=>f!==numF&&!isIdF(f)&&resultRows.length>0&&typeof resultRows[0][f]==='string'&&!looksNum(resultRows[0][f]))
+          ||resultFields.find(f=>f!==numF&&!isIdF(f)&&!f.toLowerCase().includes('date'))
+        if(resultRows.length===1){
+          const row=resultRows[0]
+          if(numF&&labelF&&row[labelF]!=null)
+            narrative=`${fmt(row[labelF])} has a ${numF.replace(/_/g,' ')} of ${fmt(row[numF])}.`
+          else
+            narrative=`Here's what I found: ${resultFields.filter(f=>!isIdF(f)).slice(0,3).map(f=>`${f.replace(/_/g,' ')}: ${fmt(row[f])}`).join(', ')}.`
+        } else if(numF&&labelF){
+          const top=resultRows[0], second=resultRows[1]
+          narrative=`${fmt(top[labelF])} leads with ${fmt(top[numF])} ${numF.replace(/_/g,' ')}${second?`, followed by ${fmt(second[labelF])} at ${fmt(second[numF])}`  :''}.`
+        } else {
+          const usableFields=resultFields.filter(f=>!isIdF(f)).slice(0,2)
+          narrative=`Top results: ${resultRows.slice(0,3).map(r=>usableFields.map(f=>fmt(r[f])).join(' — ')).join('; ')}.`
+        }
+      }
+
+      // Generate 2-3 contextual follow-up suggestions
+      const followUps:string[]=[]
+      if(resultRows.length>0){
+        if(resultRows.length===1) followUps.push(`Show all ${table.name}`,`Recommend other metrics to look at`)
+        else{
+          followUps.push(`What's the average?`)
+          if(resultFields.some((f:string)=>f.toLowerCase().includes('date')||f.toLowerCase().includes('month'))) followUps.push('Show the trend over time')
+          else followUps.push(`Show the bottom 5 instead`)
+          if(resultRows.length>5) followUps.push(`Filter to just the top 3`)
+        }
+      }
+      setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}a`,role:'assistant',text:narrative,followUps:followUps.slice(0,3)}))
 
     }catch(e:any){
       setChatMsgs(p=>p.filter(m=>!m.loading).concat({id:`m${Date.now()}e`,role:'assistant',text:'Something went wrong. Please try again.'}))
@@ -2952,12 +3098,12 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
                           </div>
                         </div>
                         :<div style={{display:'flex',flexDirection:'column',gap:5,maxWidth:'95%'}}>
-                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',overflowWrap:'anywhere'}}>{msg.text}</div>
+                          <div style={{background:'#F0F4F8',color:C.text,borderRadius:'2px 12px 12px 12px',padding:'8px 12px',fontSize:13,lineHeight:1.6,wordBreak:'break-word',whiteSpace:'pre-wrap'}}>{msg.text}</div>
                           {msg.followUps&&msg.followUps.length>0&&(
                             <div style={{display:'flex',flexWrap:'wrap',gap:5,paddingLeft:2}}>
                               {msg.followUps.map((s,i)=>(
                                 <button key={i} onClick={()=>{setChatInput(s);setTimeout(()=>sendChat(),50)}}
-                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}
+                                  style={{fontSize:11.5,padding:'3px 9px',borderRadius:10,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}
                                   onMouseOver={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}}
                                   onMouseOut={e=>{e.currentTarget.style.borderColor=C.cardBorder;e.currentTarget.style.color=C.textMuted}}>
                                   {s}
@@ -3213,9 +3359,9 @@ function AddDatabaseModal({onClose}:{onClose:()=>void}) {
 function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
   const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
   const USERS=[
-    {name:'Mo Rasul',email:'mo@northwind.com',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
-    {name:'Sarah Chen',email:'sarah@northwind.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
-    {name:'James Park',email:'james@northwind.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
+    {name:'Mo Rasul',email:'velo@demo.qwezy.io',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
+    {name:'Sarah Chen',email:'sarah@velo.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
+    {name:'James Park',email:'james@velo.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
   ]
   const ROLES=[
     {role:'Admin',desc:'Full access — manage settings, users, data, and all queries',color:C.accent},
@@ -3439,11 +3585,25 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
 }
 
 
+const NORTHWIND_COMPANY_ID='68065cb1-48d7-4488-bd78-9e354e6fb53f'
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const router=useRouter()
   const [tab,setTab]=useState<string>('ask')
   const [showTour,setShowTour]=useState(false)
+  const [isDemo,setIsDemo]=useState(false)
+
+  // Fetch user to determine if they are a demo (Northwind) user
+  useEffect(()=>{
+    const checkUser=async()=>{
+      try{
+        const res=await fetch('/api/auth')
+        if(res.ok){const d=await res.json();setIsDemo(d.company_id===NORTHWIND_COMPANY_ID)}
+      }catch{}
+    }
+    checkUser()
+  },[])
 
   // Check if user needs onboarding or has no DB
   useEffect(()=>{
@@ -3639,9 +3799,9 @@ export default function Dashboard() {
           {!gridTable&&<>
           {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>}
           {tab==='builder'&&<BuilderTab/>}
-          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
+          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult} isDemo={isDemo}/>}
           {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})}/>}
-          {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult}/></div>}
+          {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult} isDemo={isDemo}/></div>}
           {tab==='admin'&&(
             <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}}/>
           )}
