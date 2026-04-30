@@ -2575,12 +2575,14 @@ function AlertsTab({isDemo}:{isDemo:boolean}) {
     const rows = data.rows || []
     const evald = evaluateCondition(rows, fields, alert.conditionType, alert.conditionField, alert.threshold)
     const now = new Date().toISOString()
+    const runStatus: 'triggered' | 'ok' = evald.triggered ? 'triggered' : 'ok'
+    
     const patch = {
       id: alert.id,
       lastCheckedAt: now,
       lastTriggeredAt: evald.triggered ? now : null,
       run: {
-        status: evald.triggered ? 'triggered' : 'ok',
+        status: runStatus,
         triggered: evald.triggered,
         result_count: evald.result_count,
         condition_value: evald.conditionValue,
