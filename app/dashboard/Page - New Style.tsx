@@ -1260,25 +1260,41 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed,isDemo=true,dbConnected
         return
       }
 
-      const assistantMsg:ConvMessage={
-        id:`m${Date.now()}a`,role:'assistant',
-        content:`Returned ${data.rows?.length||0} rows in ${data.duration_ms}ms`,
-        sql:formatSQL(data.sql),rows:data.rows?.slice(0,500),fields:data.fields,duration:data.duration_ms,
-        confidence:data.confidence,assumptions:data.assumptions,
-        uncertainAbout:data.uncertain_about,suggestedClarification:data.suggested_clarification,
-        timestamp:new Date()
+
+
+      const assistantMsg: ConvMessage = {
+        id: `m${Date.now()}a`, role: 'assistant',
+        content: `Returned ${data.rows?.length || 0} rows in ${data.duration_ms}ms`,
+        sql: formatSQL(data.sql), rows: data.rows?.slice(0, 500), fields: data.fields, duration: data.duration_ms,
+        confidence: data.confidence, assumptions: data.assumptions,
+        uncertainAbout: data.uncertain_about, suggestedClarification: data.suggested_clarification,
+        timestamp: new Date()
       }
-      setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,assistantMsg],updatedAt:new Date()}:c))
+      setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, assistantMsg], updatedAt: new Date() } : c))
       refreshUsageMetrics()
-      if(!isDemo) fetch('/api/query-history').then(r=>r.ok?r.json():null).then(d=>{ if(d?.questions?.length>0){ const qs=d.questions.map((q:string)=>cleanLearnedQuestion(q)).filter((q:string)=>q && !isWeakLearnedQuestion(q)); setRecentQuestions(qs)
-    }catch(e:any){
-      clearInterval(st)
-      if(e.name!=='AbortError'){
-        const errMsg:ConvMessage={id:`m${Date.now()}`,role:'assistant',content:e.message,timestamp:new Date()}
-        setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,errMsg],updatedAt:new Date()}:c))
+      if (!isDemo) {
+        fetch('/api/query-history')
+          .then(r => r.ok ? r.json() : null)
+          .then(d => {
+            if (d?.questions?.length > 0) {
+              const qs = d.questions
+                .map((q: string) => cleanLearnedQuestion(q))
+                .filter((q: string) => q && !isWeakLearnedQuestion(q))
+              setRecentQuestions(qs)
+            }
+          })
+          .catch(() => {})
       }
-    }finally{setLoading(false);abortRef.current=null}
-  }
+      } catch (e: any) {
+        clearInterval(st)
+        if (e.name !== 'AbortError') {
+          const errMsg: ConvMessage = { id: `m${Date.now()}`, role: 'assistant', content: e.message, timestamp: new Date() }
+          setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, errMsg], updatedAt: new Date() } : c))
+        }
+      } finally {
+        setLoading(false)
+        abortRef.current = null
+      }
 
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:'smooth'})},[activeConv?.messages.length])
   const addMemory=(note:string)=>{if(!note.trim())return;setMemoryNotes(prev=>[...prev,note.trim()]);setMemInput('')}
