@@ -341,7 +341,7 @@ async function getMetadataContext(req: NextRequest) {
     parts.push("For monthly grouping, preserve GROUP BY and ORDER BY on DATE_TRUNC('month', raw_date_column), but select a formatted label using TO_CHAR(DATE_TRUNC('month', raw_date_column), 'MM/DD/YYYY') when the formatting rule says MM/DD/YYYY.")
     parts.push('Never ignore a per-column display_format when that column appears in the final SELECT output.')
 
-    for (const [tableKey, tableRows] of byTable.entries()) {
+    for (const [tableKey, tableRows] of Array.from(byTable.entries())) {
       const tableMetaRow = tableRows.find((r: any) => r.column_name === '__table__')
       const normalRows = tableRows.filter((r: any) => r.column_name !== '__table__')
       const extra = tableMetaRow?.extra_json && typeof tableMetaRow.extra_json === 'object'
