@@ -1270,7 +1270,7 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed,isDemo=true,dbConnected
       }
       setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,assistantMsg],updatedAt:new Date()}:c))
       refreshUsageMetrics()
-      if(!isDemo) fetch('/api/query-history').then(r=>r.ok?r.json():null).then(d=>{ if(d?.questions?.length>0){ const qs=d.questions.map((q:string)=>cleanLearnedQuestion(q)).filter((q:string)=>q && !isWeakLearnedQuestion(q)); setRecentQuestions(qs); setRecentQuestionOffset((prev: number) => (qs.length ? prev % qs.length : 0)) } }).catch(()=>{})
+      if(!isDemo) fetch('/api/query-history').then(r=>r.ok?r.json():null).then(d=>{ if(d?.questions?.length>0){ const qs=d.questions.map((q:string)=>cleanLearnedQuestion(q)).filter((q:string)=>q && !isWeakLearnedQuestion(q)); setRecentQuestions(qs) } }).catch(()=>{})
     }catch(e:any){
       clearInterval(st)
       if(e.name!=='AbortError'){
