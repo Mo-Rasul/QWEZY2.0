@@ -1459,7 +1459,7 @@ function buildSQL(
   const tables = Array.from(new Set(selCols.map(c=>c.table)))
   const primaryTable = tables[0]
   const fqn = (tbl:string) => {
-    const s = selCols.find(c=>c.table===tbl)?.tableSchema
+    const s = (selCols.find(c => c.table === tbl) as any)?.tableSchema
     return s&&s!=='public'?`${s}.${tbl}`:tbl
   }
   
