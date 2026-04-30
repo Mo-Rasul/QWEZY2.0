@@ -91,174 +91,6 @@ const PRODUCT_SECTIONS: {
   },
 ]
 
-
-// ── Lead form ─────────────────────────────────────────────────────────────────
-const ROLES = ['CEO / Founder','Operations Manager','Finance Manager / Controller','Business Analyst','Marketing Manager','Sales / Revenue Operations','Product Manager','Developer / Engineer','Other']
-const TEAM_SIZES = ['1–5 people','6–15 people','16–50 people','51–200 people','200+ people']
-const INDUSTRIES = ['E-commerce / Retail','Professional Services','Legal / Law Firm','Accounting / Finance','Logistics / Supply Chain','SaaS / Technology','Healthcare','Hospitality / Food & Beverage','Real Estate','Agency / Consulting','Other']
-const USE_CASES = ['Replace manual reporting','Give my team self-serve data access','Replace a BI tool (Tableau, Power BI etc.)','Query data without waiting on a developer','Build dashboards for clients','Just exploring']
-
-const INP_STYLE = {width:'100%',padding:'10px 13px',borderRadius:8,border:'1.5px solid #E5E7EB',fontSize:14,color:'#0F1923',fontFamily:'Inter,sans-serif',outline:'none',boxSizing:'border-box' as const,background:'#fff'}
-const LBL_STYLE = {fontSize:11.5,fontWeight:600 as const,color:'#6B7280',display:'block' as const,marginBottom:5,textTransform:'uppercase' as const,letterSpacing:'0.05em'}
-
-function DemoSelect({label,value,onChange,options,placeholder}:{label:string,value:string,onChange:(v:string)=>void,options:string[],placeholder:string}) {
-  return (
-    <div>
-      <label style={LBL_STYLE}>{label}</label>
-      <div style={{position:'relative'}}>
-        <select value={value} onChange={e=>onChange(e.target.value)}
-          style={{...INP_STYLE,appearance:'none' as const,cursor:'pointer',paddingRight:32}}
-          onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}>
-          <option value="" disabled>{placeholder}</option>
-          {options.map(o=><option key={o} value={o}>{o}</option>)}
-        </select>
-        <div style={{position:'absolute',right:11,top:'50%',transform:'translateY(-50%)',pointerEvents:'none',color:'#9CA3AF',fontSize:11}}>▾</div>
-      </div>
-    </div>
-  )
-}
-
-function LeadForm({ onClose }: { onClose: () => void }) {
-  const [step, setStep] = useState<'email'|'form'|'otp'|'welcome'>('email')
-  const [email, setEmail] = useState('')
-  const [name, setName] = useState('')
-  const [company, setCompany] = useState('')
-  const [role, setRole] = useState('')
-  const [teamSize, setTeamSize] = useState('')
-  const [industry, setIndustry] = useState('')
-  const [useCase, setUseCase] = useState('')
-  const [otp, setOtp] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const checkEmail = async () => {
-    if(!email.trim()||!email.includes('@')){setError('Please enter a valid email.');return}
-    setLoading(true);setError('')
-    try{
-      const res=await fetch('/api/demo-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'send_otp',email:email.trim()})})
-      const data=await res.json()
-      if(!res.ok){setError(data.error||'Something went wrong.');return}
-      if(data.skipOTP){window.location.href='/dashboard';return}
-      setStep('form')
-    }catch{setError('Something went wrong.')}
-    finally{setLoading(false)}
-  }
-
-  const submitForm = async () => {
-    if(!name.trim()){setError('Please enter your name.');return}
-    if(!company.trim()){setError('Please enter your company.');return}
-    if(!role){setError('Please select your role.');return}
-    if(!teamSize){setError('Please select your team size.');return}
-    setLoading(true);setError('')
-    try{
-      const res=await fetch('/api/demo-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'send_otp',email:email.trim(),name:name.trim(),company:company.trim(),role,teamSize,industry,useCase})})
-      const data=await res.json()
-      if(!res.ok){setError(data.error||'Something went wrong.');return}
-      setStep('otp')
-    }catch{setError('Something went wrong.')}
-    finally{setLoading(false)}
-  }
-
-  const verifyOTP = async () => {
-    if(otp.length!==6){setError('Please enter the 6-digit code.');return}
-    setLoading(true);setError('')
-    try{
-      const res=await fetch('/api/demo-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'verify_otp',email:email.trim(),code:otp})})
-      const data=await res.json()
-      if(!res.ok){setError(data.error||'Invalid code.');return}
-      setStep('welcome')
-      setTimeout(()=>{window.location.href='/dashboard'},2000)
-    }catch{setError('Something went wrong.')}
-    finally{setLoading(false)}
-  }
-
-  const stepTitle = step==='email'?'Try the live demo':step==='form'?'Tell us about yourself':step==='otp'?'Check your email':`You're in!`
-  const stepSub = step==='email'?'No credit card. No setup. Live data in minutes.':step==='form'?`We'll tailor the demo to your use case.`:step==='otp'?`We sent a 6-digit code to ${email}`:'Taking you to your dashboard…'
-
-  return (
-    <div style={{position:'fixed',inset:0,background:'rgba(2,20,12,0.82)',backdropFilter:'blur(8px)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
-      <div style={{background:'#fff',borderRadius:16,width:'100%',maxWidth:500,boxShadow:'0 32px 80px rgba(0,0,0,0.28)',overflow:'hidden',fontFamily:'Inter,sans-serif',maxHeight:'90vh',overflowY:'auto'}}>
-        <div style={{padding:'24px 28px 0',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-          <div>
-            <div style={{fontSize:20,fontWeight:800,color:'#0F1923',letterSpacing:'-0.4px',marginBottom:4}}>{stepTitle}</div>
-            <div style={{fontSize:13.5,color:'#6B7280',lineHeight:1.5}}>{stepSub}</div>
-          </div>
-          <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,color:'#9CA3AF',cursor:'pointer',lineHeight:1,padding:'0 0 0 16px',flexShrink:0}}>×</button>
-        </div>
-        <div style={{padding:'20px 28px 28px',display:'flex',flexDirection:'column',gap:14}}>
-
-          {step==='email'&&<>
-            <div>
-              <label style={LBL_STYLE}>Work email</label>
-              <input value={email} onChange={e=>{setEmail(e.target.value);setError('')}}
-                onKeyDown={e=>e.key==='Enter'&&checkEmail()}
-                placeholder="you@company.com" type="email" style={INP_STYLE}
-                onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}
-                autoComplete="email"/>
-            </div>
-            {error&&<div style={{fontSize:13,color:'#EF4444',background:'#FEF2F2',padding:'8px 12px',borderRadius:7}}>{error}</div>}
-            <button onClick={checkEmail} disabled={loading}
-              style={{background:loading?'#A7F3D0':'#059669',color:'#fff',border:'none',borderRadius:9,padding:'13px',fontSize:15,fontWeight:700,cursor:loading?'not-allowed':'pointer',fontFamily:'Inter,sans-serif'}}>
-              {loading?'Checking…':'Continue →'}
-            </button>
-            <div style={{fontSize:12,color:'#9CA3AF',textAlign:'center'}}>No credit card · No setup · Live data immediately</div>
-          </>}
-
-          {step==='form'&&<>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-              <div>
-                <label style={LBL_STYLE}>Full name</label>
-                <input value={name} onChange={e=>{setName(e.target.value);setError('')}} placeholder="Jane Smith" style={INP_STYLE}
-                  onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-              </div>
-              <div>
-                <label style={LBL_STYLE}>Company</label>
-                <input value={company} onChange={e=>{setCompany(e.target.value);setError('')}} placeholder="Acme Inc" style={INP_STYLE}
-                  onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}/>
-              </div>
-            </div>
-            <DemoSelect label="Your role" value={role} onChange={v=>{setRole(v);setError('')}} options={ROLES} placeholder="Select your role"/>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-              <DemoSelect label="Team size" value={teamSize} onChange={v=>{setTeamSize(v);setError('')}} options={TEAM_SIZES} placeholder="Select size"/>
-              <DemoSelect label="Industry" value={industry} onChange={setIndustry} options={INDUSTRIES} placeholder="Select industry"/>
-            </div>
-            <DemoSelect label="What brings you here?" value={useCase} onChange={setUseCase} options={USE_CASES} placeholder="Select use case (optional)"/>
-            {error&&<div style={{fontSize:13,color:'#EF4444',background:'#FEF2F2',padding:'8px 12px',borderRadius:7}}>{error}</div>}
-            <button onClick={submitForm} disabled={loading}
-              style={{background:loading?'#A7F3D0':'#059669',color:'#fff',border:'none',borderRadius:9,padding:'13px',fontSize:15,fontWeight:700,cursor:loading?'not-allowed':'pointer',fontFamily:'Inter,sans-serif'}}>
-              {loading?'Sending code…':'Send verification code →'}
-            </button>
-            <button onClick={()=>{setStep('email');setError('')}} style={{background:'none',border:'none',fontSize:13,color:'#9CA3AF',cursor:'pointer',fontFamily:'Inter,sans-serif'}}>← Back</button>
-          </>}
-
-          {step==='otp'&&<>
-            <input value={otp}
-              onChange={e=>{setOtp(e.target.value.replace(/\D/g,'').slice(0,6));setError('')}}
-              onKeyDown={e=>e.key==='Enter'&&verifyOTP()}
-              placeholder="000000" maxLength={6}
-              style={{...INP_STYLE,textAlign:'center',fontSize:32,fontFamily:"'JetBrains Mono',monospace",letterSpacing:10,fontWeight:800,padding:'14px'}}
-              onFocus={e=>e.target.style.borderColor='#059669'} onBlur={e=>e.target.style.borderColor='#E5E7EB'}
-              autoComplete="one-time-code"/>
-            {error&&<div style={{fontSize:13,color:'#EF4444',background:'#FEF2F2',padding:'8px 12px',borderRadius:7}}>{error}</div>}
-            <button onClick={verifyOTP} disabled={otp.length!==6||loading}
-              style={{background:otp.length===6&&!loading?'#059669':'#E5E7EB',color:otp.length===6&&!loading?'#fff':'#9CA3AF',border:'none',borderRadius:9,padding:'13px',fontSize:15,fontWeight:700,cursor:otp.length===6?'pointer':'default',fontFamily:'Inter,sans-serif'}}>
-              {loading?'Verifying…':'Access the demo →'}
-            </button>
-            <button onClick={()=>{setStep('form');setOtp('');setError('')}} style={{background:'none',border:'none',fontSize:13,color:'#9CA3AF',cursor:'pointer',fontFamily:'Inter,sans-serif'}}>← Resend code</button>
-          </>}
-
-          {step==='welcome'&&(
-            <div style={{textAlign:'center',padding:'12px 0 8px'}}>
-              <div style={{width:56,height:56,borderRadius:'50%',background:'#ECFDF5',border:'3px solid #059669',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px',fontSize:24}}>✓</div>
-              <div style={{fontSize:14,color:'#6B7280',lineHeight:1.6}}>Setting up your workspace…</div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 const PRICING = [
   {
     name: 'Starter',
@@ -407,10 +239,9 @@ function PrimaryButton({ children, onClick }: { children: ReactNode; onClick?: (
   )
 }
 
-function SecondaryButton({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+function SecondaryButton({ children }: { children: ReactNode }) {
   return (
     <button
-      onClick={onClick}
       style={{
         background: 'transparent',
         color: C.accent,
@@ -1101,7 +932,6 @@ function PricingCard({ plan }: { plan: (typeof PRICING)[number] }) {
         ))}
       </div>
       <button
-        onClick={() => (window as any).__qwezyShowForm?.()}
         style={{
           width: '100%',
           padding: '14px 18px',
@@ -1122,8 +952,6 @@ function PricingCard({ plan }: { plan: (typeof PRICING)[number] }) {
 
 export default function LandingPage() {
   const router = useRouter()
-  const [showForm, setShowForm] = useState(false)
-  useEffect(() => { (window as any).__qwezyShowForm = () => setShowForm(true); return () => { delete (window as any).__qwezyShowForm } }, [])
   const typed = useTyping(HERO_QUERIES)
   const [activeFeature, setActiveFeature] = useState<FeatureKey>('ask')
 
@@ -1168,7 +996,6 @@ export default function LandingPage() {
 
   return (
     <div style={{ fontFamily: 'Inter, -apple-system, sans-serif', color: C.text, background: C.bg }}>
-      {showForm && <LeadForm onClose={() => setShowForm(false)} />}
       <style>{`
         *{box-sizing:border-box;margin:0;padding:0}
         html{scroll-behavior:smooth}
@@ -1238,7 +1065,7 @@ export default function LandingPage() {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <button onClick={() => router.push('/auth')} style={{ background: 'transparent', border: 'none', color: C.textMuted, fontSize: 14.5, fontWeight: 700, cursor: 'pointer' }}>Sign in</button>
-              <PrimaryButton onClick={() => setShowForm(true)}>Request access</PrimaryButton>
+              <PrimaryButton>Request access</PrimaryButton>
             </div>
           </div>
         </header>
@@ -1257,8 +1084,8 @@ export default function LandingPage() {
                 The page should feel easy on the eyes, not crowded. Clear messaging on the left. A strong product demo on the right.
               </p>
               <div className="heroTopActions" style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 24 }}>
-                <PrimaryButton onClick={() => setShowForm(true)}>Start now →</PrimaryButton>
-                <SecondaryButton onClick={() => setShowForm(true)}>Try the demo →</SecondaryButton>
+                <PrimaryButton>Start now →</PrimaryButton>
+                <SecondaryButton>Try the demo →</SecondaryButton>
               </div>
               <div className="heroChips" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', maxWidth: 620 }}>
                 {['Ask questions in plain English', 'Open tables as spreadsheets', 'Save dashboards and reports', 'Alert on the numbers that matter'].map((item) => (
@@ -1324,7 +1151,7 @@ export default function LandingPage() {
             <p style={{ fontSize: 17, lineHeight: 1.85, color: 'rgba(255,255,255,0.72)', maxWidth: 520, marginBottom: 24 }}>
               Qwezy combines natural language, company context, and governed metadata so people can ask better questions and trust the answer they get back.
             </p>
-            <button onClick={() => setShowForm(true)} style={{ background: C.navText, color: C.navBg, border: 'none', borderRadius: 999, padding: '14px 20px', fontWeight: 800, fontSize: 15, cursor: 'pointer' }}>Explore the product →</button>
+            <button style={{ background: C.navText, color: C.navBg, border: 'none', borderRadius: 999, padding: '14px 20px', fontWeight: 800, fontSize: 15, cursor: 'pointer' }}>Explore the product →</button>
           </div>
 
           <div style={{ background: '#0E3A2C', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 22, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.24)' }}>

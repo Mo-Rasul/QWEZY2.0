@@ -92,13 +92,38 @@ function ConnectStep({onNext,onConnectionString}:{onNext:()=>void;onConnectionSt
         ? { connectionString: urlStr, ssl }
         : { host, port, database: db, username: user, password: pass, ssl }
       const res=await fetch('/api/test-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-      const data=await res.json()
-      setResult(data)
-      if(data.ok){
-        // Store the connection string for saving later
-        const connStr = mode==='url' ? urlStr : buildConnStr({host,port,database:db,username:user,password:pass,ssl})
-        onConnectionString(connStr)
+      const data = await res.json()
+
+      if (!res.ok) {
+        setResult({
+          ok: false,
+          error: data.error || 'Connection failed'
+        })
+        return
       }
+
+      // ✅ SUCCESS NORMALIZED
+      const successResult = {
+        ok: true,
+        error: undefined,
+        table_count: 0,       // placeholder for now
+        latency_ms: 0         // placeholder
+      }
+
+      setResult(successResult)
+
+
+      setTimeout(() => {
+        onNext()
+      }, 500)
+
+      // ✅ STORE CONNECTION
+      const connStr = mode==='url'
+        ? urlStr
+        : buildConnStr({host,port,database:db,username:user,password:pass,ssl})
+
+      onConnectionString(connStr)
+
     }catch(e:any){setResult({ok:false,error:'Unexpected error — try again'})}
     finally{setTesting(false)}
   }

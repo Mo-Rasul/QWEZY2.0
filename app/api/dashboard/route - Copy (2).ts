@@ -46,7 +46,6 @@ export async function GET(req: NextRequest) {
       order: v.order_index || 0,
       rows: Array.isArray(v.rows_cache) ? v.rows_cache : [],
       fields: Array.isArray(v.fields_cache) ? v.fields_cache : [],
-      builder: layout.builder || undefined,
     }
   }
 
@@ -114,7 +113,7 @@ export async function POST(req: NextRequest) {
 
   const buildView = (v: any, pageId: string, i: number) => ({
     // Only use id if it's a real UUID, otherwise let Supabase generate one
-    id: isUUID(v.id) ? v.id : crypto.randomUUID(),
+    ...(isUUID(v.id) ? { id: v.id } : {}),
     page_id: pageId,
     company_id: user.company_id,
     name: v.name || 'Untitled',
@@ -123,7 +122,7 @@ export async function POST(req: NextRequest) {
     card_width: v.gw ? Number(v.gw) : (Number(v.w) || 480),
     card_height: v.gh ? Number(v.gh) : (Number(v.h) || 280),
     shared: v.shared ?? true,
-    layout: { gx: v.gx ?? null, gy: v.gy ?? null, gw: v.gw ?? null, gh: v.gh ?? null, builder: v.builder ?? null },
+    layout: { gx: v.gx ?? null, gy: v.gy ?? null, gw: v.gw ?? null, gh: v.gh ?? null },
     order_index: i,
     // rows_cache is jsonb — store as JSON
     rows_cache: Array.isArray(v.rows) && v.rows.length > 0 ? v.rows : null,

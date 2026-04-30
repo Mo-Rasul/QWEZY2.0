@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
       const session = await createDemoSession(normalizedEmail)
       if (session.error) return NextResponse.json({ error: session.error }, { status: 500 })
       const res = NextResponse.json({ ok: true, returning: true, skipOTP: true })
-      setSessionCookies(res, session.token!, session.refreshToken)
+      setSessionCookies(res, session.token!)
       return res
     }
 
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
     if (session.error) return NextResponse.json({ error: session.error }, { status: 500 })
 
     const res = NextResponse.json({ ok: true })
-    setSessionCookies(res, session.token!, session.refreshToken)
+    setSessionCookies(res, session.token!)
     return res
   }
 
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-async function createDemoSession(email: string): Promise<{ token?: string; refreshToken?: string; error?: string }> {
+async function createDemoSession(email: string): Promise<{ token?: string; error?: string }> {
   try {
     const { createClient } = await import('@supabase/supabase-js')
     const supabase = createClient(
@@ -208,13 +208,13 @@ async function createDemoSession(email: string): Promise<{ token?: string; refre
     const { data: signIn } = await supabase.auth.signInWithPassword({ email, password: demoPwd })
 
     if (!signIn?.session?.access_token) return { error: 'Could not create session' }
-    return { token: signIn.session.access_token, refreshToken: signIn.session.refresh_token || '' }
+    return { token: signIn.session.access_token }
   } catch (err: any) {
     return { error: err.message }
   }
 }
 
-function setSessionCookies(res: NextResponse, token: string, refreshToken: string = '') {
+function setSessionCookies(res: NextResponse, token: string) {
   const opts = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -223,6 +223,5 @@ function setSessionCookies(res: NextResponse, token: string, refreshToken: strin
     path: '/',
   }
   res.cookies.set('qwezy_session', token, opts)
-  res.cookies.set('qwezy_refresh', refreshToken, opts)
   res.cookies.set('qwezy_company', NORTHWIND_COMPANY_ID, opts)
 }

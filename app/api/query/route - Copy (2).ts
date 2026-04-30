@@ -283,6 +283,10 @@ type RuleRow = {
   value?: string
 }
 
+function formatRuleType(value: string) {
+  return String(value || '').replace(/_/g, ' ').trim()
+}
+
 function safeString(value: any) {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -294,24 +298,44 @@ function ruleInstruction(rule: RuleRow) {
   if (!type && !target && !value) return ''
 
   const lowerType = type.toLowerCase()
-  const lowerTarget = target.toLowerCase()
-  const lowerValue = value.toLowerCase()
 
   if (lowerType === 'formatting') {
+    const lowerTarget = target.toLowerCase()
+    const lowerValue = value.toLowerCase()
     const mmddyyyy = lowerValue.includes('mm/dd/yyyy')
+
     if (mmddyyyy && lowerTarget) {
-      return `Formatting rule for ${target}: format final selected output as MM/DD/YYYY. If returning the raw date column, use TO_CHAR(${target}, 'MM/DD/YYYY'). If selecting MAX(${target}) or MIN(${target}), wrap the final selected expression as TO_CHAR(MAX(${target}), 'MM/DD/YYYY') or TO_CHAR(MIN(${target}), 'MM/DD/YYYY'). If grouping by month or another period, keep GROUP BY/ORDER BY on DATE_TRUNC using the raw date, but display the selected bucket label with TO_CHAR(DATE_TRUNC('month', ${target}), 'MM/DD/YYYY'). Do not return raw ISO timestamps for ${target} when this rule applies.`
+      return `Formatting rule for ${target}: display as MM/DD/YYYY. If grouping by month or another period, preserve grouping with DATE_TRUNC on the raw date, but display the grouped value with TO_CHAR(DATE_TRUNC('month', ${target}), 'MM/DD/YYYY'). For plain date output, use TO_CHAR(${target}, 'MM/DD/YYYY').`
     }
+
     return `Formatting rule for ${target || 'result'}: ${value}`
   }
 
-  if (lowerType === 'metric') return `Metric rule for ${target || 'metric'}: ${value}`
-  if (lowerType === 'interpretation') return `Interpretation rule for ${target || 'term'}: ${value}`
-  if (lowerType === 'preferred field' || lowerType === 'preferred_field') return `Preferred field rule for ${target || 'concept'}: ${value}`
-  if (lowerType === 'exclusion') return `Exclusion rule for ${target || 'scope'}: ${value}`
-  if (lowerType === 'join note' || lowerType === 'join_note') return `Join rule for ${target || 'relationship'}: ${value}`
+  if (lowerType === 'metric') {
+    return `Metric rule for ${target || 'metric'}: ${value}`
+  }
 
-  return `${type}${target ? ` for ${target}` : ''}: ${value}`
+  if (lowerType === 'interpretation') {
+    return `Interpretation rule for ${target || 'term'}: ${value}`
+  }
+
+  if (lowerType === 'preferred field') {
+    return `Preferred field rule for ${target || 'concept'}: ${value}`
+  }
+
+  if (lowerType === 'preferred_field') {
+    return `Preferred field rule for ${target || 'concept'}: ${value}`
+  }
+
+  if (lowerType === 'exclusion') {
+    return `Exclusion rule for ${target || 'scope'}: ${value}`
+  }
+
+  if (lowerType === 'join note' || lowerType === 'join_note') {
+    return `Join rule for ${target || 'table relationship'}: ${value}`
+  }
+
+  return `${formatRuleType(type) || 'Rule'}${target ? ` for ${target}` : ''}: ${value}`
 }
 
 async function getMetadataContext(req: NextRequest) {
@@ -337,13 +361,13 @@ async function getMetadataContext(req: NextRequest) {
 
     const parts: string[] = []
     parts.push('Company metadata rules from admins. These rules must influence SQL generation and result display whenever relevant.')
-    parts.push('If a date formatting rule exists, format the final selected date output using TO_CHAR, including plain date selections, MAX(date), MIN(date), and DATE_TRUNC buckets.')
-    parts.push("For monthly grouping, preserve GROUP BY and ORDER BY on DATE_TRUNC('month', raw_date_column), but select a formatted label using TO_CHAR(DATE_TRUNC('month', raw_date_column), 'MM/DD/YYYY') when the formatting rule says MM/DD/YYYY.")
-    parts.push('Never ignore a per-column display_format when that column appears in the final SELECT output.')
+    parts.push('If a formatting rule exists for a date field, preserve correct grouping/sorting on the raw date expression and format only the displayed value with TO_CHAR(...).')
+    parts.push('If a formatting rule says MM/DD/YYYY and the query groups by month, use DATE_TRUNC for GROUP BY/ORDER BY and TO_CHAR(DATE_TRUNC(...), \'MM/DD/YYYY\') for the selected label.')
 
     for (const [tableKey, tableRows] of byTable.entries()) {
       const tableMetaRow = tableRows.find((r: any) => r.column_name === '__table__')
       const normalRows = tableRows.filter((r: any) => r.column_name !== '__table__')
+
       const extra = tableMetaRow?.extra_json && typeof tableMetaRow.extra_json === 'object'
         ? tableMetaRow.extra_json
         : {}
@@ -389,10 +413,6 @@ async function getMetadataContext(req: NextRequest) {
         if (colParts.length) {
           parts.push(`- Column ${col}: ${colParts.join(' | ')}`)
         }
-
-        if (displayFormat.toLowerCase() === 'mm/dd/yyyy') {
-          parts.push(`- Hard formatting rule for column ${col}: if ${col} appears in the final SELECT, return it formatted as TO_CHAR(${col}, 'MM/DD/YYYY'). If the final SELECT uses MAX(${col}) or MIN(${col}), format the aggregate output with TO_CHAR(MAX(${col}), 'MM/DD/YYYY') or TO_CHAR(MIN(${col}), 'MM/DD/YYYY'). If ${col} is bucketed by month, display TO_CHAR(DATE_TRUNC('month', ${col}), 'MM/DD/YYYY') while grouping and ordering by DATE_TRUNC('month', ${col}).`)
-        }
       }
     }
 
@@ -434,7 +454,7 @@ Additional admin metadata and formatting rules:
 ${metadataContext}
 
 When admin metadata conflicts with a generic assumption, follow the admin metadata.
-If a column or rule says MM/DD/YYYY, you must format the final selected output accordingly, even for MAX(), MIN(), and DATE_TRUNC() bucket labels.
+If the user asks for trends by month/quarter/year and a relevant formatting rule exists, keep the date bucket expression in GROUP BY and ORDER BY, but format the displayed label using TO_CHAR(...).
 Return only SQL-safe PostgreSQL expressions and valid JSON.`
 }
 

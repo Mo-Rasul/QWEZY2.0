@@ -74,99 +74,77 @@ async function getCompanyDB(req: NextRequest): Promise<string> {
   return ctx?.company?.db_connection_string || DEMO_DB_URL
 }
 
-const NORTHWIND_PROMPT = `You are Qwezy, a SQL assistant for the Northwind demo database (PostgreSQL).
+async function getSystemPrompt(req: NextRequest): Promise<string> {
+  const ctx = await getAuthenticatedContext(req)
+  if (!ctx?.company?.db_connection_string) return NORTHWIND_PROMPT
+  if (ctx.company.db_connection_string === process.env.DEMO_DATABASE_URL) return NORTHWIND_PROMPT
+  if (ctx.company.tables_config?.system_prompt) return ctx.company.tables_config.system_prompt
+  const name = String((ctx.company as any)?.name || '').toLowerCase()
+  const dbSchema = String((ctx.company as any)?.db_schema || '').toLowerCase()
+  if (name.includes('rasul') || name.includes('ahmed') || dbSchema.includes('practice') || dbSchema.includes('finance')) return LAW_FIRM_PROMPT
+  return GENERIC_PROMPT
+}
 
-You are in a multi-turn conversation. Always read prior messages carefully and build on that context.
+async function getMetadataContext(req: NextRequest, question?: string): Promise<string> {
+  const ctx = await getAuthenticatedContext(req)
+  if (!ctx?.appUser?.company_id) return ''
+  try {
+    const q = String(question || '').toLowerCase()
+    const [{ data: tableRows }, { data: columnRows }] = await Promise.all([
+      supabaseAdmin
+        .from('table_annotations')
+        .select('table_schema, table_name, definition, ai_notes, default_date_format, preferred_metric_logic')
+        .eq('company_id', ctx.appUser.company_id),
+      supabaseAdmin
+        .from('column_notes')
+        .select('table_schema, table_name, column_name, description, ai_notes, preferred_label, display_format, synonyms')
+        .eq('company_id', ctx.appUser.company_id)
+    ])
 
-Available tables and key columns:
-- orders: order_id, customer_id, employee_id, order_date, required_date, shipped_date, ship_via, freight, ship_city, ship_country
-- order_details: order_id, product_id, unit_price, quantity, discount
-- customers: customer_id, company_name, contact_name, city, country, phone
-- employees: employee_id, last_name, first_name, title, hire_date, city, country, reports_to
-- products: product_id, product_name, supplier_id, category_id, unit_price, units_in_stock, units_on_order, reorder_level, discontinued
-- categories: category_id, category_name, description
-- suppliers: supplier_id, company_name, contact_name, city, country, phone
-- shippers: shipper_id, company_name, phone
+    const tableNotes = (tableRows || []).filter((r:any)=>{
+      if (!q) return true
+      return q.includes(String(r.table_name || '').toLowerCase()) || q.includes(String(r.table_schema || '').toLowerCase())
+    }).slice(0, 6)
 
-Key relationships:
-- orders.customer_id → customers.customer_id
-- orders.employee_id → employees.employee_id
-- orders.ship_via → shippers.shipper_id
-- order_details.order_id → orders.order_id
-- order_details.product_id → products.product_id
-- products.category_id → categories.category_id
-- products.supplier_id → suppliers.supplier_id
+    const columnNotes = (columnRows || []).filter((r:any)=>{
+      if (!q) return false
+      const candidates = [r.column_name, ...(r.synonyms || [])].map((x:any)=>String(x || '').toLowerCase()).filter(Boolean)
+      return q.includes(String(r.table_name || '').toLowerCase()) || candidates.some((c:string)=>q.includes(c))
+    }).slice(0, 12)
 
-Rules:
-- Revenue = SUM(unit_price * quantity * (1 - discount))
-- Always use valid PostgreSQL SQL with table aliases
-- For ambiguous questions, make a reasonable assumption and note it in "assumptions"
-
-Return ONLY a raw JSON object — no markdown, no backticks, no explanation outside the JSON:
-
-For questions that should query data:
-{"type":"sql","sql":"SELECT ...","confidence":"high|medium|low","assumptions":[],"uncertain_about":null,"suggested_clarification":null}
-
-For questions that are explanations, definitions, or genuinely can't be answered with SQL:
-{"type":"text","answer":"your answer here","confidence":"high","assumptions":[]}`
-
-const LAW_FIRM_PROMPT = `You are Qwezy, a SQL assistant for a law-firm PostgreSQL database.
-
-You are in a multi-turn conversation. Follow-up questions usually refer to the same table/entity as the previous answer unless the user clearly changes topic.
-
-Assume common schemas like practice and finance. Prefer these tables and columns when they exist:
-- practice.attorneys: id, name, email, role, billing_rate, target_hours_monthly, status, practice_area_id
-- practice.clients: id, company_name, contact_name, email, phone, city, state, client_type, status, intake_date
-- practice.matters: id, matter_number, title, client_id, lead_attorney_id, practice_area_id, status, open_date, close_date, estimated_value
-- practice.practice_areas: id, name, code, billing_rate_default
-- practice.time_entries: id, matter_id, attorney_id, entry_date, hours, description, billable, billed, rate, amount
-- finance.invoices: id, invoice_number, matter_id, client_id, issued_date, due_date, amount, total, status, paid_date
-- finance.payments: id, invoice_id, client_id, payment_date, amount, method, notes
-- finance.expenses: id, matter_id, attorney_id, expense_date, category, description, amount, billable, reimbursed
-- finance.billing_rates: id, attorney_id, practice_area_id, rate, effective_date
-- finance.contacts: id, name, company, contact_type
-- finance.referrals: id, matter_id, contact_id, referral_date, referral_fee, fee_paid
-
-Rules:
-- Always use schema prefixes like practice. and finance. when applicable
-- For questions about attorneys, roles, paralegals, associates, of counsel, or staff, prefer practice.attorneys unless the conversation clearly points elsewhere
-- For billing rates, prefer finance.billing_rates joined to practice.attorneys or practice.practice_areas
-- For client money questions, prefer finance.invoices, finance.payments, and practice.time_entries as appropriate
-- Always use valid PostgreSQL SQL with table aliases
-- For ambiguous questions, make a reasonable assumption and note it in assumptions
-
-Return ONLY a raw JSON object — no markdown, no backticks, no explanation outside the JSON:
-
-For questions that should query data:
-{"type":"sql","sql":"SELECT ...","confidence":"high|medium|low","assumptions":[],"uncertain_about":null,"suggested_clarification":null}
-
-For questions that are explanations, definitions, or genuinely can't be answered with SQL:
-{"type":"text","answer":"your answer here","confidence":"high","assumptions":[]}`
-
-const GENERIC_PROMPT = `You are Qwezy, a SQL assistant. Generate valid PostgreSQL SQL for the user's question.
-
-You are in a multi-turn conversation. Always read prior messages carefully — follow-up questions refer to whatever was discussed or queried previously. Build on that context rather than starting fresh.
-
-For ambiguous questions, make a reasonable assumption and note it in "assumptions".
-
-Return ONLY a raw JSON object — no markdown, no backticks, no explanation outside the JSON:
-
-For questions that should query data:
-{"type":"sql","sql":"SELECT ...","confidence":"high|medium|low","assumptions":[],"uncertain_about":null,"suggested_clarification":null}
-
-For questions that are explanations, definitions, or genuinely can't be answered with SQL:
-{"type":"text","answer":"your answer here","confidence":"high","assumptions":[]}`
-
-const ANALYST_PROMPT = `You are a sharp, concise data analyst. The user asked a question about a dataset and you have the query results in front of you. Respond like a real analyst talking to a business user — direct, human, no jargon.
-
-Rules:
-- One or two short sentences max. Lead with the actual answer using real names and numbers from the data.
-- If the question is vague or could mean multiple things, answer the most likely interpretation AND ask one short clarifying question at the end.
-- Never say "Based on the data" or "The results show". Just answer.
-- Suggest 2–3 smart follow-up questions an analyst would actually ask next. Make them specific to the data, not generic.
-
-Return ONLY a raw JSON object — no markdown, no backticks:
-{"answer":"your 1-2 sentence response","followUps":["follow-up 1","follow-up 2","follow-up 3"]}`
+    const parts:string[] = []
+    if (tableNotes.length) {
+      parts.push('Admin table notes:')
+      for (const r of tableNotes) {
+        const line = [
+          `${r.table_schema}.${r.table_name}`,
+          r.definition ? `definition=${r.definition}` : '',
+          r.ai_notes ? `ai_notes=${r.ai_notes}` : '',
+          r.preferred_metric_logic ? `metric_logic=${r.preferred_metric_logic}` : '',
+          r.default_date_format ? `date_format=${r.default_date_format}` : '',
+        ].filter(Boolean).join(' | ')
+        parts.push(`- ${line}`)
+      }
+    }
+    if (columnNotes.length) {
+      parts.push('Admin column notes:')
+      for (const r of columnNotes) {
+        const line = [
+          `${r.table_schema}.${r.table_name}.${r.column_name}`,
+          r.description ? `description=${r.description}` : '',
+          r.ai_notes ? `ai_notes=${r.ai_notes}` : '',
+          r.preferred_label ? `preferred_label=${r.preferred_label}` : '',
+          r.display_format ? `display_format=${r.display_format}` : '',
+          Array.isArray(r.synonyms) && r.synonyms.length ? `synonyms=${r.synonyms.join(', ')}` : '',
+        ].filter(Boolean).join(' | ')
+        parts.push(`- ${line}`)
+      }
+    }
+    return parts.join('\n')
+  } catch {
+    return ''
+  }
+}
 
 function buildMessages(
   question: string,
@@ -213,6 +191,99 @@ function buildMessages(
   return messages
 }
 
+const NORTHWIND_PROMPT = `You are Qwezy, a SQL assistant for the Northwind demo database (PostgreSQL).
+
+You are in a multi-turn conversation. Always read prior messages carefully — follow-up questions like "top 5 of those", "break it down by country", "where is that city", or "show all orders" refer to whatever was discussed or queried previously. Build on that context rather than starting fresh.
+
+Available tables and key columns:
+- orders: order_id, customer_id, employee_id, order_date, required_date, shipped_date, ship_via, freight, ship_city, ship_country
+- order_details: order_id, product_id, unit_price, quantity, discount
+- customers: customer_id, company_name, contact_name, city, country, phone
+- employees: employee_id, last_name, first_name, title, hire_date, city, country, reports_to
+- products: product_id, product_name, supplier_id, category_id, unit_price, units_in_stock, units_on_order, reorder_level, discontinued
+- categories: category_id, category_name, description
+- suppliers: supplier_id, company_name, contact_name, city, country, phone
+- shippers: shipper_id, company_name, phone
+
+Key relationships:
+- orders.customer_id → customers.customer_id
+- orders.employee_id → employees.employee_id
+- orders.ship_via → shippers.shipper_id
+- order_details.order_id → orders.order_id
+- order_details.product_id → products.product_id
+- products.category_id → categories.category_id
+- products.supplier_id → suppliers.supplier_id
+
+Rules:
+- Revenue = SUM(unit_price * quantity * (1 - discount))
+- Always use valid PostgreSQL SQL with table aliases
+- For ambiguous questions, make a reasonable assumption and note it in "assumptions"
+
+Return ONLY a raw JSON object — no markdown, no backticks, no explanation outside the JSON:
+
+For questions that should query data:
+{"type":"sql","sql":"SELECT ...","confidence":"high|medium|low","assumptions":[],"uncertain_about":null,"suggested_clarification":null}
+
+For questions that are explanations, definitions, or genuinely can't be answered with SQL (e.g. "what does freight mean", "explain this result"):
+{"type":"text","answer":"your answer here","confidence":"high","assumptions":[]}`
+
+const LAW_FIRM_PROMPT = `You are Qwezy, a SQL assistant for a law-firm PostgreSQL database.
+
+You are in a multi-turn conversation. Follow-up questions usually refer to the same table/entity as the previous answer unless the user clearly changes topic.
+
+Assume common schemas like practice and finance. Prefer these tables and columns when they exist:
+- practice.attorneys: id, name, email, role, billing_rate, target_hours_monthly, status, practice_area_id
+- practice.clients: id, company_name, contact_name, email, phone, city, state, client_type, status, intake_date
+- practice.matters: id, matter_number, title, client_id, lead_attorney_id, practice_area_id, status, open_date, close_date, estimated_value
+- practice.practice_areas: id, name, code, billing_rate_default
+- practice.time_entries: id, matter_id, attorney_id, entry_date, hours, description, billable, billed, rate, amount
+- finance.invoices: id, invoice_number, matter_id, client_id, issued_date, due_date, amount, total, status, paid_date
+- finance.payments: id, invoice_id, client_id, payment_date, amount, method, notes
+- finance.expenses: id, matter_id, attorney_id, expense_date, category, description, amount, billable, reimbursed
+- finance.billing_rates: id, attorney_id, practice_area_id, rate, effective_date
+- finance.contacts: id, name, company, contact_type
+
+Rules:
+- Always use schema prefixes like practice. and finance. when applicable
+- For questions about attorneys, roles, paralegals, associates, of counsel, or staff, prefer practice.attorneys unless the conversation clearly points elsewhere
+- For billing rates, prefer finance.billing_rates joined to practice.attorneys or practice.practice_areas
+- For client money questions, prefer finance.invoices, finance.payments, and practice.time_entries as appropriate
+- Always use valid PostgreSQL SQL with table aliases
+- For ambiguous questions, make a reasonable assumption and note it in assumptions
+
+Return ONLY a raw JSON object — no markdown, no backticks, no explanation outside the JSON:
+
+For questions that should query data:
+{"type":"sql","sql":"SELECT ...","confidence":"high|medium|low","assumptions":[],"uncertain_about":null,"suggested_clarification":null}
+
+For questions that are explanations, definitions, or genuinely can't be answered with SQL:
+{"type":"text","answer":"your answer here","confidence":"high","assumptions":[]}`
+
+const GENERIC_PROMPT = `You are Qwezy, a SQL assistant. Generate valid PostgreSQL SQL for the user's question.
+
+You are in a multi-turn conversation. Always read prior messages carefully — follow-up questions refer to whatever was discussed or queried previously. Build on that context rather than starting fresh.
+
+For ambiguous questions, make a reasonable assumption and note it in "assumptions".
+
+Return ONLY a raw JSON object — no markdown, no backticks, no explanation outside the JSON:
+
+For questions that should query data:
+{"type":"sql","sql":"SELECT ...","confidence":"high|medium|low","assumptions":[],"uncertain_about":null,"suggested_clarification":null}
+
+For questions that are explanations, definitions, or genuinely can't be answered with SQL:
+{"type":"text","answer":"your answer here","confidence":"high","assumptions":[]}`
+
+const ANALYST_PROMPT = `You are a sharp, concise data analyst. The user asked a question about a dataset and you have the query results in front of you. Respond like a real analyst talking to a business user — direct, human, no jargon.
+
+Rules:
+- One or two short sentences max. Lead with the actual answer using real names and numbers from the data.
+- If the question is vague or could mean multiple things, answer the most likely interpretation AND ask one short clarifying question at the end.
+- Never say "Based on the data" or "The results show". Just answer.
+- Suggest 2–3 smart follow-up questions an analyst would actually ask next. Make them specific to the data, not generic.
+
+Return ONLY a raw JSON object — no markdown, no backticks:
+{"answer":"your 1-2 sentence response","followUps":["follow-up 1","follow-up 2","follow-up 3"]}`
+
 async function trackQuery(req: NextRequest, params: {
   question?: string
   customSQL?: string
@@ -245,6 +316,7 @@ async function trackQuery(req: NextRequest, params: {
         query_type: params.customSQL ? 'sql' : 'nl',
       })
       .eq('id', existingUsage.id)
+
     if (usageUpdateError) throw usageUpdateError
   } else {
     const { error: usageInsertError } = await supabaseAdmin
@@ -258,6 +330,7 @@ async function trackQuery(req: NextRequest, params: {
         created_at: now.toISOString(),
         updated_at: now.toISOString(),
       })
+
     if (usageInsertError) throw usageInsertError
   }
 
@@ -273,195 +346,24 @@ async function trackQuery(req: NextRequest, params: {
         duration_ms: params.durationMs,
         created_at: now.toISOString(),
       })
+
     if (historyError) throw historyError
   }
-}
-
-type RuleRow = {
-  type?: string
-  target?: string
-  value?: string
-}
-
-function safeString(value: any) {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function ruleInstruction(rule: RuleRow) {
-  const type = safeString(rule?.type)
-  const target = safeString(rule?.target)
-  const value = safeString(rule?.value)
-  if (!type && !target && !value) return ''
-
-  const lowerType = type.toLowerCase()
-  const lowerTarget = target.toLowerCase()
-  const lowerValue = value.toLowerCase()
-
-  if (lowerType === 'formatting') {
-    const mmddyyyy = lowerValue.includes('mm/dd/yyyy')
-    if (mmddyyyy && lowerTarget) {
-      return `Formatting rule for ${target}: format final selected output as MM/DD/YYYY. If returning the raw date column, use TO_CHAR(${target}, 'MM/DD/YYYY'). If selecting MAX(${target}) or MIN(${target}), wrap the final selected expression as TO_CHAR(MAX(${target}), 'MM/DD/YYYY') or TO_CHAR(MIN(${target}), 'MM/DD/YYYY'). If grouping by month or another period, keep GROUP BY/ORDER BY on DATE_TRUNC using the raw date, but display the selected bucket label with TO_CHAR(DATE_TRUNC('month', ${target}), 'MM/DD/YYYY'). Do not return raw ISO timestamps for ${target} when this rule applies.`
-    }
-    return `Formatting rule for ${target || 'result'}: ${value}`
-  }
-
-  if (lowerType === 'metric') return `Metric rule for ${target || 'metric'}: ${value}`
-  if (lowerType === 'interpretation') return `Interpretation rule for ${target || 'term'}: ${value}`
-  if (lowerType === 'preferred field' || lowerType === 'preferred_field') return `Preferred field rule for ${target || 'concept'}: ${value}`
-  if (lowerType === 'exclusion') return `Exclusion rule for ${target || 'scope'}: ${value}`
-  if (lowerType === 'join note' || lowerType === 'join_note') return `Join rule for ${target || 'relationship'}: ${value}`
-
-  return `${type}${target ? ` for ${target}` : ''}: ${value}`
-}
-
-async function getMetadataContext(req: NextRequest) {
-  const ctx = await getAuthenticatedContext(req)
-  if (!ctx?.appUser?.company_id) return ''
-
-  try {
-    const { data: rows, error } = await supabaseAdmin
-      .from('column_notes')
-      .select('*')
-      .eq('company_id', ctx.appUser.company_id)
-      .order('table_name', { ascending: true })
-      .order('column_name', { ascending: true })
-
-    if (error || !rows || rows.length === 0) return ''
-
-    const byTable = new Map<string, any[]>()
-    for (const row of rows) {
-      const key = `${row.table_schema || 'public'}.${row.table_name || ''}`
-      if (!byTable.has(key)) byTable.set(key, [])
-      byTable.get(key)!.push(row)
-    }
-
-    const parts: string[] = []
-    parts.push('Company metadata rules from admins. These rules must influence SQL generation and result display whenever relevant.')
-    parts.push('If a date formatting rule exists, format the final selected date output using TO_CHAR, including plain date selections, MAX(date), MIN(date), and DATE_TRUNC buckets.')
-    parts.push("For monthly grouping, preserve GROUP BY and ORDER BY on DATE_TRUNC('month', raw_date_column), but select a formatted label using TO_CHAR(DATE_TRUNC('month', raw_date_column), 'MM/DD/YYYY') when the formatting rule says MM/DD/YYYY.")
-    parts.push('Never ignore a per-column display_format when that column appears in the final SELECT output.')
-
-    for (const [tableKey, tableRows] of byTable.entries()) {
-      const tableMetaRow = tableRows.find((r: any) => r.column_name === '__table__')
-      const normalRows = tableRows.filter((r: any) => r.column_name !== '__table__')
-      const extra = tableMetaRow?.extra_json && typeof tableMetaRow.extra_json === 'object'
-        ? tableMetaRow.extra_json
-        : {}
-
-      const summary = safeString(tableMetaRow?.description || extra?.summary)
-      const owner = safeString(extra?.owner)
-      const poc = safeString(extra?.point_of_contact)
-      const preferredMetricLogic = safeString(extra?.preferred_metric_logic)
-      const aiNotes = safeString(extra?.ai_notes)
-      const rules = Array.isArray(extra?.rules) ? extra.rules : []
-
-      parts.push(`Table: ${tableKey}`)
-      if (summary) parts.push(`- Summary: ${summary}`)
-      if (owner) parts.push(`- Owner: ${owner}`)
-      if (poc) parts.push(`- Point of contact: ${poc}`)
-      if (preferredMetricLogic) parts.push(`- Preferred metric logic: ${preferredMetricLogic}`)
-      if (aiNotes) parts.push(`- Table AI notes: ${aiNotes}`)
-
-      for (const rule of rules) {
-        const line = ruleInstruction(rule)
-        if (line) parts.push(`- ${line}`)
-      }
-
-      for (const row of normalRows) {
-        const col = safeString(row.column_name)
-        if (!col) continue
-
-        const description = safeString(row.description)
-        const preferredLabel = safeString(row.preferred_label)
-        const displayFormat = safeString(row.display_format)
-        const aiColNotes = safeString(row.ai_notes || row.note)
-        const synonyms = Array.isArray(row.synonyms)
-          ? row.synonyms.filter(Boolean).map((v: any) => String(v).trim()).filter(Boolean)
-          : []
-
-        const colParts: string[] = []
-        if (description) colParts.push(`description: ${description}`)
-        if (preferredLabel) colParts.push(`preferred label: ${preferredLabel}`)
-        if (displayFormat) colParts.push(`display format: ${displayFormat}`)
-        if (synonyms.length) colParts.push(`synonyms: ${synonyms.join(', ')}`)
-        if (aiColNotes) colParts.push(`AI note: ${aiColNotes}`)
-
-        if (colParts.length) {
-          parts.push(`- Column ${col}: ${colParts.join(' | ')}`)
-        }
-
-        if (displayFormat.toLowerCase() === 'mm/dd/yyyy') {
-          parts.push(`- Hard formatting rule for column ${col}: if ${col} appears in the final SELECT, return it formatted as TO_CHAR(${col}, 'MM/DD/YYYY'). If the final SELECT uses MAX(${col}) or MIN(${col}), format the aggregate output with TO_CHAR(MAX(${col}), 'MM/DD/YYYY') or TO_CHAR(MIN(${col}), 'MM/DD/YYYY'). If ${col} is bucketed by month, display TO_CHAR(DATE_TRUNC('month', ${col}), 'MM/DD/YYYY') while grouping and ordering by DATE_TRUNC('month', ${col}).`)
-        }
-      }
-    }
-
-    return parts.join('\n')
-  } catch {
-    return ''
-  }
-}
-
-async function getSystemPrompt(req: NextRequest): Promise<string> {
-  const ctx = await getAuthenticatedContext(req)
-  let basePrompt = GENERIC_PROMPT
-
-  if (!ctx?.company?.db_connection_string) {
-    basePrompt = NORTHWIND_PROMPT
-  } else if (ctx.company.db_connection_string === process.env.DEMO_DATABASE_URL) {
-    basePrompt = NORTHWIND_PROMPT
-  } else if (ctx.company.tables_config?.system_prompt) {
-    basePrompt = ctx.company.tables_config.system_prompt
-  } else {
-    const name = String((ctx.company as any)?.name || '').toLowerCase()
-    const dbSchema = String((ctx.company as any)?.db_schema || '').toLowerCase()
-    if (
-      name.includes('rasul') ||
-      name.includes('ahmed') ||
-      dbSchema.includes('practice') ||
-      dbSchema.includes('finance')
-    ) {
-      basePrompt = LAW_FIRM_PROMPT
-    }
-  }
-
-  const metadataContext = await getMetadataContext(req)
-  if (!metadataContext) return basePrompt
-
-  return `${basePrompt}
-
-Additional admin metadata and formatting rules:
-${metadataContext}
-
-When admin metadata conflicts with a generic assumption, follow the admin metadata.
-If a column or rule says MM/DD/YYYY, you must format the final selected output accordingly, even for MAX(), MIN(), and DATE_TRUNC() bucket labels.
-Return only SQL-safe PostgreSQL expressions and valid JSON.`
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const {
-      question,
-      customSQL,
-      memoryContext,
-      conversationContext,
-      narrativeOnly,
-      rows: narrativeRows,
-      fields: narrativeFields,
-      tableName,
-    } = body
+    const { question, customSQL, memoryContext, conversationContext, narrativeOnly, rows: narrativeRows, fields: narrativeFields, tableName } = body
 
     if (narrativeOnly) {
       if (!question?.trim()) {
         return NextResponse.json({ error: 'Question is required' }, { status: 400 })
       }
-
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
-      const dataSample = (narrativeRows || [])
-        .slice(0, 20)
-        .map((r: any) => (narrativeFields || []).map((f: string) => `${f}: ${r[f]}`).join(', '))
-        .join('\n')
+      const dataSample = (narrativeRows || []).slice(0, 20).map((r: any) =>
+        (narrativeFields || []).map((f: string) => `${f}: ${r[f]}`).join(', ')
+      ).join('\n')
 
       const message = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
@@ -496,8 +398,10 @@ export async function POST(req: NextRequest) {
 
     if (!sql) {
       const systemPrompt = await getSystemPrompt(req)
+      const metadataContext = await getMetadataContext(req, question)
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
-      const messages = buildMessages(question, conversationContext, memoryContext)
+      const mergedMemoryContext = [memoryContext, metadataContext].filter(Boolean).join('\n\n')
+      const messages = buildMessages(question, conversationContext, mergedMemoryContext)
 
       const message = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',

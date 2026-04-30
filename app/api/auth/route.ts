@@ -60,15 +60,14 @@ export async function POST(req: NextRequest) {
     // Update last_seen
     try { await supabaseAdmin.from('users').update({ last_seen: new Date().toISOString() }).eq('id', data.user.id) } catch {}
 
+    const cookieOpts = {
+      httpOnly: true, secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax' as const, maxAge: 60 * 60 * 24 * 7, path: '/'
+    }
     const res = NextResponse.json({ user: { ...profile, email: data.user.email, plan: companyPlan }, token: data.session?.access_token })
-    res.cookies.set('qwezy_session', data.session?.access_token || '', {
-      httpOnly: true, secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax', maxAge: 60 * 60 * 24 * 7, path: '/'
-    })
-    res.cookies.set('qwezy_company', profile.company_id, {
-      httpOnly: true, secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax', maxAge: 60 * 60 * 24 * 7, path: '/'
-    })
+    res.cookies.set('qwezy_session', data.session?.access_token || '', cookieOpts)
+    res.cookies.set('qwezy_refresh', data.session?.refresh_token || '', cookieOpts)
+    res.cookies.set('qwezy_company', profile.company_id, cookieOpts)
     return res
   }
 
@@ -87,23 +86,76 @@ export async function DELETE() {
   await supabase.auth.signOut()
   const res = NextResponse.json({ ok: true })
   res.cookies.delete('qwezy_session')
+  res.cookies.delete('qwezy_refresh')
   res.cookies.delete('qwezy_company')
   return res
 }
 
 export async function GET(req: NextRequest) {
-  // Return current user profile from session cookie
   const token = req.cookies.get('qwezy_session')?.value
   if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
+  let authUser = null
+
+  // Try the access token first
   const { data: { user }, error } = await supabase.auth.getUser(token)
-  if (error || !user) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+  if (!error && user) {
+    authUser = user
+  } else {
+    // Access token expired — try to refresh using the refresh token cookie
+    const refreshToken = req.cookies.get('qwezy_refresh')?.value
+    if (!refreshToken) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+
+    const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession({ refresh_token: refreshToken })
+    if (refreshError || !refreshed.session) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+
+    authUser = refreshed.user
+
+    // Build response with refreshed tokens — fetch profile below then return
+    const { data: profile } = await supabaseAdmin
+      .from('users')
+      .select('id,company_id,name,role,status')
+      .eq('id', authUser!.id)
+      .single()
+
+    if (!profile) return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
+
+    // Get company info
+    let companyName = '', companyPlan = 'starter', dbConnected = false
+    if (profile.company_id) {
+      const { data: company } = await supabaseAdmin
+        .from('companies').select('name,plan,db_connection_string').eq('id', profile.company_id).single()
+      if (company) { companyName = company.name || ''; companyPlan = company.plan || 'starter'; dbConnected = !!company.db_connection_string }
+    }
+
+    const cookieOpts = { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' as const, maxAge: 60 * 60 * 24 * 7, path: '/' }
+    const { data: rCo } = await supabaseAdmin.from('companies').select('tables_config').eq('id', profile.company_id).single()
+    const rAiConfigured = !!(rCo?.tables_config?.system_prompt)
+    const res = NextResponse.json({ id: profile.id, company_id: profile.company_id, company_name: companyName, name: profile.name, email: authUser!.email, role: profile.role, plan: companyPlan, db_connected: dbConnected, ai_configured: rAiConfigured })
+    res.cookies.set('qwezy_session', refreshed.session.access_token, cookieOpts)
+    res.cookies.set('qwezy_refresh', refreshed.session.refresh_token, cookieOpts)
+    return res
+  }
 
   const { data: profile } = await supabaseAdmin
     .from('users')
     .select('id,company_id,name,role,status')
-    .eq('id', user.id)
+    .eq('id', authUser.id)
     .single()
 
-  return NextResponse.json({ user: { ...profile, email: user.email } })
+  if (!profile) return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
+
+  let companyName = '', companyPlan = 'starter', dbConnected = false
+  if (profile.company_id) {
+    const { data: company } = await supabaseAdmin
+      .from('companies').select('name,plan,db_connection_string').eq('id', profile.company_id).single()
+    if (company) { companyName = company.name || ''; companyPlan = company.plan || 'starter'; dbConnected = !!company.db_connection_string }
+  }
+
+  let aiConfigured = false
+  if (profile.company_id) {
+    const { data: co } = await supabaseAdmin.from('companies').select('tables_config').eq('id', profile.company_id).single()
+    aiConfigured = !!(co?.tables_config?.system_prompt)
+  }
+  return NextResponse.json({ id: profile.id, company_id: profile.company_id, company_name: companyName, name: profile.name, email: authUser.email, role: profile.role, plan: companyPlan, db_connected: dbConnected, ai_configured: aiConfigured })
 }

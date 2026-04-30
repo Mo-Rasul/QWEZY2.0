@@ -4,16 +4,16 @@ import { useRouter } from 'next/navigation'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, CartesianGrid, Legend } from 'recharts'
 
 const C = {
-  navBg:'#022c22', navBorder:'#064e3b', navText:'#6ee7b7', navActive:'#10b981',
-  bg:'#F6F9FC', sidebar:'#FFFFFF', sidebarBorder:'#E3EAF2',
-  card:'#FFFFFF', cardBorder:'#E3EAF2',
+  navBg:'#022C22', navBorder:'#064E3B', navText:'#6EE7B7', navActive:'#10B981',
+  bg:'#F4F8F5', sidebar:'#FBFDFC', sidebarBorder:'#D7E4DC',
+  card:'#FFFFFF', cardBorder:'#D7E4DC',
   accent:'#059669', accentDark:'#047857', accentBg:'#ECFDF5',
-  text:'#0F1923', textMuted:'#4B6358', textLight:'#8A9BB0',
+  text:'#0F1923', textMuted:'#4B6358', textLight:'#7C9488',
   success:'#10B981', danger:'#EF4444', warn:'#F59E0B',
   codeBg:'#0D1117', codeText:'#7EE787',
-  tableHead:'#F8FAFD', tableRowAlt:'#FAFCFE',
-  greenBg:'#ECFDF5', greenBorder:'#A7F3D0',
-  chatBg:'#F0F4F8',
+  tableHead:'#F7FBF8', tableRowAlt:'#FCFDFC',
+  greenBg:'#ECFDF5', greenBorder:'#B7E4CC',
+  chatBg:'#F3F8F5',
 }
 
 const TABLES = [
@@ -78,6 +78,45 @@ const TABLES = [
 const ALL_COLS = TABLES.flatMap(t=>t.columns.map(c=>({...c,table:t.name,team:t.team})))
 const TC: any = {id:'#059669',str:'#8A9BB0',num:'#10B981',date:'#F59E0B',bool:'#8B5CF6'}
 const STEPS = ['Reading question…','Identifying tables…','Mapping joins…','Generating SQL…','Running query…']
+const NORTHWIND_COMPANY_ID = '68065cb1-48d7-4488-bd78-9e354e6fb53f'
+const SCHEMA_COLORS = ['#F59E0B','#8B5CF6','#06B6D4','#10B981','#059669','#0EA5E9','#F97316','#EF4444','#EC4899','#14B8A6']
+function schemaToTables(data:any):any[] {
+  if (!data) return []
+  const colType=(dt:string)=>{
+    const d=(dt||'').toLowerCase()
+    if(/int|serial|numeric|decimal|float|real|double|money/.test(d)) return 'num'
+    if(/date|time|timestamp/.test(d)) return 'date'
+    if(/bool/.test(d)) return 'bool'
+    return 'str'
+  }
+  // Primary path: /api/schema returns { tables: [...], table_count, column_count }
+  if (data.tables && Array.isArray(data.tables)) {
+    return data.tables.map((t:any,i:number)=>({
+      name: t.name,
+      schema: t.schema||'public',
+      displayName: t.displayName||t.name,
+      color: t.color||SCHEMA_COLORS[i%SCHEMA_COLORS.length],
+      rows: t.rows!=null?String(t.rows):'',
+      refresh:'', desc:t.desc||'', teams:t.teams||[], sampleQ:t.sampleQ||[],
+      joins:t.joins||[], dateField:t.dateField||'', x:t.x||0, y:t.y||0,
+      columns: Array.isArray(t.columns)
+        ? t.columns.map((c:any)=>({n:c.n||c.column_name||c.name||String(c), t:c.t||colType(c.data_type||c.type||'')}))
+        : []
+    }))
+  }
+  // Fallback: flat object format
+  let raw:Record<string,any[]> = {}
+  if (data.schema) raw = data.schema
+  else Object.keys(data).forEach(k=>{ if(Array.isArray(data[k])) raw[k]=data[k] })
+  return Object.entries(raw).filter(([n])=>n).map(([name,cols],i)=>({
+    name, schema:'public', displayName:name,
+    color:SCHEMA_COLORS[i%SCHEMA_COLORS.length],
+    rows:'', refresh:'', desc:'', teams:[], sampleQ:[], joins:[], dateField:'', x:0, y:0,
+    columns: Array.isArray(cols)
+      ? cols.map((c:any)=>({n:c.column_name||c.name||c.n||String(c), t:colType(c.data_type||c.type||c.t||'')}))
+      : []
+  }))
+}
 const GREEN_SHADES = ['#059669','#10B981','#34D399','#6EE7B7','#A7F3D0','#064E3B','#047857']
 const SCHED_COLOR: any = {daily:'#10B981',weekly:'#F59E0B',monthly:'#8B5CF6',manual:'#8A9BB0'}
 const SCHEDULE_NEXT: any = {daily:'Tomorrow 6:00 AM',weekly:'Monday 6:00 AM',monthly:'1st of next month',manual:'Manual only'}
@@ -117,6 +156,228 @@ function formatSQL(sql: string): string {
     .replace(/,\s*/g, ',\n  ')
     .replace(/^\n/, '')
     .split('\n').map(l => l.trim()).filter(Boolean).join('\n')
+}
+
+function inferJoinCount(table:any, allTables:any[] = []) {
+  if (!table) return 0
+  const explicit = Array.isArray(table.joins) ? table.joins.length : 0
+  const tables = allTables.length ? allTables : TABLES
+  const inferred = new Set<string>()
+  ;(table.columns || []).forEach((c:any)=>{
+    const name = c?.n || c?.name || ''
+    if (!name || name === 'id' || !name.endsWith('_id')) return
+    const base = name.slice(0, -3)
+    const target = tables.find((t:any)=>
+      t.name !== table.name && (
+        t.name === base ||
+        t.name === base + 's' ||
+        t.name === base + 'es' ||
+        t.name.startsWith(base)
+      )
+    )
+    if (target) inferred.add(target.name)
+  })
+  return Math.max(explicit, inferred.size)
+}
+
+function normalizeConversation(raw:any): Conversation {
+  return {
+    id: raw.id,
+    title: raw.title || 'New conversation',
+    createdAt: new Date(raw.createdAt || raw.created_at || new Date()),
+    updatedAt: new Date(raw.updatedAt || raw.updated_at || new Date()),
+    messages: (raw.messages || []).map((m:any)=>({
+      id: m.id,
+      role: m.role,
+      content: m.content || '',
+      sql: m.sql || m.sql_query || undefined,
+      rows: m.rows || m.result_rows || undefined,
+      fields: m.fields || m.result_fields || undefined,
+      duration: m.duration ?? m.duration_ms ?? undefined,
+      confidence: m.confidence || undefined,
+      assumptions: m.assumptions || undefined,
+      uncertainAbout: m.uncertainAbout ?? m.uncertain_about ?? null,
+      suggestedClarification: m.suggestedClarification ?? m.suggested_clarification ?? null,
+      rewritten: m.rewritten || false,
+      timestamp: new Date(m.timestamp || m.created_at || new Date()),
+    }))
+  }
+}
+
+
+function cleanLearnedQuestion(q:string){
+  return q
+    .replace(/\s+/g,' ')
+    .replace(/[?]{2,}/g,'?')
+    .trim()
+}
+
+function isWeakLearnedQuestion(q:string){
+  const s = cleanLearnedQuestion(q).toLowerCase()
+  if(!s) return true
+  if(s.length < 8) return true
+  if(/\b(id|uuid|pk|primary key)\b/.test(s)) return true
+  if(/\baverage\s+(id|bar number|account number)\b/.test(s)) return true
+  if(/^[a-z]+\s+[a-z]+\s+(email|phone)$/.test(s)) return true
+  return false
+}
+
+function pickBestMetric(columns:any[] = []){
+  const ranked = ['revenue','amount','total','balance','hours','rate','value','fee','cost','price']
+  const names = columns.map((c:any)=>String(c?.n||'').toLowerCase())
+  for(const key of ranked){
+    const hit = names.find((n:string)=>n.includes(key) && !n.endsWith('_id') && n !== 'id')
+    if(hit) return hit
+  }
+  const fallback = columns.find((c:any)=>c?.t==='num' && !String(c?.n||'').toLowerCase().endsWith('_id') && String(c?.n||'').toLowerCase() !== 'id')
+  return fallback?.n || null
+}
+
+function buildProfessionalStarterQuestions(liveSchema:any[] = [], recentQuestions:string[] = [], isDemo=false){
+  if(isDemo){
+    return ['Top 10 customers by total revenue','Monthly revenue trend for 2025','Products below reorder level','Sales by employee this year']
+  }
+
+  const starters:string[] = []
+  const seen = new Set<string>()
+  const add = (q:string) => {
+    const cleaned = cleanLearnedQuestion(q)
+    const key = cleaned.toLowerCase()
+    if(!cleaned || seen.has(key) || isWeakLearnedQuestion(cleaned)) return
+    seen.add(key)
+    starters.push(cleaned)
+  }
+
+    const names = liveSchema.map((t:any)=>String(t?.displayName||t?.name||'').toLowerCase())
+  const hasName = (part:string) => names.some((n:string)=>n.includes(part))
+
+  if(hasName('attorneys')){
+    add('Show active attorneys by role')
+    add('Which attorneys have the highest billed hours this month?')
+    add('Which attorneys are below target monthly hours?')
+  }
+  if(hasName('clients')){
+    add('Which clients generate the most revenue?')
+    add('Which clients have overdue invoices right now?')
+  }
+  if(hasName('matters')){
+    add('Show open matters by practice area')
+    add('Which matters have the highest billed hours this month?')
+  }
+  if(hasName('invoices')){
+    add('Show overdue invoices by client')
+    add('What is the collections trend over time?')
+  }
+  if(hasName('trust_accounts')){
+    add('Show trust account balances by matter')
+  }
+  if(hasName('time_entries')){
+    add('Show billable hours trend over time')
+  }
+  if(hasName('billing_rates')){
+    add('Show billing rates by attorney and practice area')
+  }
+
+  for(const t of liveSchema.slice(0,8)){
+    const columns = Array.isArray(t?.columns) ? t.columns : []
+    const metric = pickBestMetric(columns)
+    const lowerCols = columns.map((c:any)=>String(c?.n||'').toLowerCase())
+    const entity = String(t?.name||'records').replace(/_/g,' ')
+    if(metric) add(`Top ${entity} by ${String(metric).replace(/_/g,' ')}`)
+    if(lowerCols.some((c:string)=>c==='status')) add(`Show active ${entity}`)
+    if(lowerCols.some((c:string)=>/(date|month|year|time)$/.test(c))) add(`Show ${entity} trend over time`)
+  }
+
+  for(const q of recentQuestions){
+    add(q)
+  }
+
+  return starters.slice(0,4)
+}
+
+function buildProfessionalFollowUps(rows:any[] = [], fields:string[] = []){
+  const suggestions:string[] = []
+  const seen = new Set<string>()
+  const add = (q:string) => {
+    if(!q || seen.has(q)) return
+    seen.add(q)
+    suggestions.push(q)
+  }
+
+  const lowerFields = fields.map(f=>String(f).toLowerCase())
+  const sample = rows?.[0] || {}
+  const isNumericField = (f:string) => /^-?\d+(\.\d+)?$/.test(String(sample?.[f] ?? ''))
+  const nonIdNumeric = fields.find(f => isNumericField(f) && !/(^id$|_id$|number$|bar_number|account_number)/i.test(f))
+  const moneyField = fields.find(f => /(amount|total|revenue|balance|rate|fee|cost|price|value)/i.test(f))
+  const hoursField = fields.find(f => /(hours|time|duration|utilization)/i.test(f))
+  const roleField = lowerFields.find(f => f==='role' || f.includes('title'))
+  const statusField = lowerFields.find(f => f==='status' || f.includes('active'))
+  const locationField = lowerFields.find(f => /(city|state|country|region)/.test(f))
+  const dateField = lowerFields.find(f => /(date|month|year|time)/.test(f))
+  const clientField = lowerFields.find(f => /(client|company_name|contact_name)/.test(f))
+  const matterField = lowerFields.find(f => /(matter|practice_area)/.test(f))
+
+  if(roleField) add('Break this down by role')
+  if(statusField) add('Show only active records')
+  if(locationField) add('Break this down by location')
+  if(dateField) add('Show the trend over time')
+  if(clientField && (moneyField || hoursField || nonIdNumeric)) add('Which clients are driving the most value?')
+  if(matterField && (moneyField || hoursField || nonIdNumeric)) add('Which matters are contributing the most?')
+  if(moneyField) add(`Show the top 10 by ${moneyField.replace(/_/g,' ')}`)
+  else if(hoursField) add(`Show the top 10 by ${hoursField.replace(/_/g,' ')}`)
+  else if(nonIdNumeric) add(`Show the top 10 by ${nonIdNumeric.replace(/_/g,' ')}`)
+  add('Explain what this means for the business')
+
+  return suggestions.slice(0,3)
+}
+
+
+function stableShuffleQuestions(items:string[], seed:number){
+  const arr = [...items]
+  let s = seed || 1
+  const next = () => {
+    s = (s * 1664525 + 1013904223) % 4294967296
+    return s / 4294967296
+  }
+  for(let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(next() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+
+function OverlaySpinner({label='Loading…'}:{label?:string}) {
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(246,249,252,0.72)',backdropFilter:'blur(1px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:20,pointerEvents:'none'}}>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:10}}>
+        <div className='spin' style={{width:22,height:22,borderRadius:'50%',border:'2px solid #D1FAE5',borderTopColor:C.accent}} />
+        <span style={{fontSize:12.5,color:C.textMuted,fontFamily:'Inter,sans-serif'}}>{label}</span>
+      </div>
+    </div>
+  )
+}
+
+
+function BrowserShell({children, style}:{children:any, style?:any}) {
+  return (
+    <div style={{background:C.card,border:`1px solid ${C.cardBorder}`,borderRadius:24,boxShadow:'0 24px 54px rgba(10,35,28,0.08)',overflow:'hidden', ...style}}>
+      <div style={{height:34,display:'flex',alignItems:'center',padding:'0 14px',borderBottom:`1px solid ${C.cardBorder}`,background:'#F7FBF8'}}>
+        <div style={{display:'flex',gap:6}}>{['#D1D9D5','#D1D9D5','#D1D9D5'].map((c,i)=><span key={i} style={{width:8,height:8,borderRadius:'50%',background:c,display:'block'}} />)}</div>
+        <div style={{margin:'0 auto',width:'44%',height:10,borderRadius:999,background:'#E5ECE8'}} />
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function LandingKpi({label,value,highlight=false}:{label:string,value:string,highlight?:boolean}) {
+  return (
+    <div style={{padding:16,borderRadius:18,border:`1px solid ${highlight?C.greenBorder:C.cardBorder}`,background:highlight?C.greenBg:'#FBFDFC'}}>
+      <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',color:C.textLight,marginBottom:8}}>{label}</div>
+      <div style={{fontSize:34,fontWeight:800,letterSpacing:'-0.05em',color:C.navBg}}>{value}</div>
+    </div>
+  )
 }
 
 // ── SQL Editor ────────────────────────────────────────────────────────────────
@@ -168,10 +429,10 @@ function ResultsTable({rows,fields,compact=false}:{rows:any[],fields:string[],co
     return r
   },[rows,filter,sort,dir])
   return(
-    <div style={{background:C.card,borderRadius:8,border:`1px solid ${C.cardBorder}`,overflow:'hidden'}}>
-      {!compact&&<div style={{padding:'7px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',gap:8,alignItems:'center',background:C.tableHead}}>
+    <div style={{background:C.card,borderRadius:18,border:`1px solid ${C.cardBorder}`,overflow:'hidden',boxShadow:'0 12px 28px rgba(10,35,28,0.05)'}}>
+      {!compact&&<div style={{padding:'10px 14px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',gap:8,alignItems:'center',background:C.tableHead}}>
         <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Filter rows…"
-          style={{padding:'4px 9px',borderRadius:5,border:`1px solid ${C.cardBorder}`,fontSize:12,color:C.text,fontFamily:'Inter,sans-serif',width:150,background:'#fff'}}/>
+          style={{padding:'8px 11px',borderRadius:12,border:`1px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:'Inter,sans-serif',width:150,background:'#fff'}}/>
         <span style={{fontSize:11.5,color:C.textLight}}>{data.length}/{rows.length} rows</span>
         {sort&&<span style={{fontSize:11.5,color:C.accent,marginLeft:4}}>Sorted by {sort.replace(/_/g,' ')} {dir==='asc'?'↑':'↓'} · <button onClick={()=>setSort(null)} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:11,fontFamily:'Inter,sans-serif'}}>clear</button></span>}
       </div>}
@@ -180,7 +441,7 @@ function ResultsTable({rows,fields,compact=false}:{rows:any[],fields:string[],co
           <thead style={{position:'sticky',top:0,zIndex:1}}>
             <tr style={{background:C.tableHead}}>
               {fields.filter(f=>vis.includes(f)).map(f=><th key={f} onClick={()=>toggleSort(f)}
-                style={{padding:compact?'5px 10px':'7px 12px',textAlign:'left',fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap',cursor:'pointer',userSelect:'none',borderBottom:`1px solid ${C.cardBorder}`}}
+                style={{padding:compact?'8px 10px':'10px 14px',textAlign:'left',fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap',cursor:'pointer',userSelect:'none',borderBottom:`1px solid ${C.cardBorder}`}}
                 onMouseOver={e=>(e.currentTarget.style.color=C.accent)} onMouseOut={e=>(e.currentTarget.style.color=C.textLight)}>
                 {f.replace(/_/g,' ')} {sort===f?(dir==='asc'?'↑':'↓'):''}
               </th>)}
@@ -189,7 +450,7 @@ function ResultsTable({rows,fields,compact=false}:{rows:any[],fields:string[],co
           <tbody>
             {data.map((row,i)=><tr key={i} style={{borderTop:`1px solid #F1F5F9`,background:i%2===0?'#fff':C.tableRowAlt}}
               onMouseOver={e=>(e.currentTarget.style.background='#F0F7FF')} onMouseOut={e=>(e.currentTarget.style.background=i%2===0?'#fff':C.tableRowAlt)}>
-              {fields.filter(f=>vis.includes(f)).map(f=><td key={f} style={{padding:compact?'5px 10px':'7px 12px',fontSize:12.5,color:C.text,whiteSpace:'nowrap'}}>
+              {fields.filter(f=>vis.includes(f)).map(f=><td key={f} style={{padding:compact?'8px 10px':'10px 14px',fontSize:12.5,color:C.text,whiteSpace:'nowrap'}}>
                 {String(row[f]??'').match(/^-?\d+(\.\d+)?$/)
                   ?<span style={{background:C.accentBg,color:C.accentDark,fontWeight:600,padding:'1px 7px',borderRadius:4,fontFamily:"'JetBrains Mono'",fontSize:11.5}}>{row[f]}</span>
                   :String(row[f]??'')}
@@ -203,7 +464,8 @@ function ResultsTable({rows,fields,compact=false}:{rows:any[],fields:string[],co
 }
 
 // ── Table Drawer ──────────────────────────────────────────────────────────────
-function TableDrawer({table,onClose,onAsk,onPreview}:{table:any,onClose:()=>void,onAsk:(q:string)=>void,onPreview:(t:any)=>void}) {
+function TableDrawer({table,onClose,onAsk,onPreview,allTables=[]}:{table:any,onClose:()=>void,onAsk:(q:string)=>void,onPreview:(t:any)=>void,allTables?:any[]}) {
+  const joinCount = inferJoinCount(table, allTables)
   return(
     <div style={{position:'fixed',right:0,top:0,bottom:0,width:340,background:'#fff',boxShadow:'-4px 0 24px rgba(0,0,0,0.1)',zIndex:200,display:'flex',flexDirection:'column',overflow:'hidden'}}>
       <div style={{padding:'12px 18px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:9,background:C.tableHead}}>
@@ -214,7 +476,7 @@ function TableDrawer({table,onClose,onAsk,onPreview}:{table:any,onClose:()=>void
       <div style={{flex:1,overflowY:'auto',padding:'14px 18px'}}>
         <p style={{fontSize:13,color:C.textMuted,lineHeight:1.65,marginBottom:16}}>{table.desc}</p>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:16}}>
-          {[['Rows',table.rows],['Refresh',table.refresh],['Joins',String(table.joins.length)]].map(([k,v])=>(
+          {[['Rows',table.rows],['Refresh',table.refresh],['Joins',String(joinCount)]].map(([k,v])=>(
             <div key={k} style={{background:C.bg,borderRadius:7,padding:'8px 10px',border:`1px solid ${C.cardBorder}`}}>
               <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}}>{k}</div>
               <div style={{fontSize:13.5,fontWeight:600,color:C.text}}>{v}</div>
@@ -259,7 +521,7 @@ function PreviewModal({table,onClose}:{table:any,onClose:()=>void}) {
   const [loading,setLoading]=useState(true)
   const [err,setErr]=useState('')
   useEffect(()=>{
-    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:`SELECT * FROM ${table.name} ORDER BY ${table.dateField} DESC LIMIT 100`})})
+    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:`SELECT * FROM ${table.schema&&table.schema!=='public'?table.schema+'.'+table.name:table.name}${table.dateField?' ORDER BY '+table.dateField+' DESC':''} LIMIT 100`})})
       .then(r=>r.json()).then(d=>{if(d.error)setErr(d.error);else{setRows(d.rows);setFields(d.fields)}})
       .catch(e=>setErr(e.message)).finally(()=>setLoading(false))
   },[table.name])
@@ -269,7 +531,7 @@ function PreviewModal({table,onClose}:{table:any,onClose:()=>void}) {
         <div style={{padding:'12px 18px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:9}}>
           <div style={{width:8,height:8,borderRadius:'50%',background:table.color}}/>
           <span style={{fontFamily:"'JetBrains Mono'",fontWeight:600,fontSize:14,color:C.text}}>{table.name}</span>
-          <span style={{fontSize:12,color:C.textLight}}>Top 100 rows · ordered by {table.dateField} DESC</span>
+          <span style={{fontSize:12,color:C.textLight}}>Top 100 rows{table.dateField?` · ordered by ${table.dateField} DESC`:''}</span>
           <button onClick={onClose} style={{marginLeft:'auto',background:'none',border:'none',fontSize:20,color:C.textLight,cursor:'pointer'}}>×</button>
         </div>
         <div style={{flex:1,overflow:'auto',padding:14}}>
@@ -302,129 +564,252 @@ function TableInfoPanel({table,x,y,onClose,onAsk,onPreview,onGrid,onDrawer,showA
   onAsk:(q:string)=>void, onPreview:(t:any)=>void, onGrid:(t:any)=>void, onDrawer:(t:any)=>void,
   showActions?:boolean
 }) {
-  const [activeTab,setActiveTab]=useState<'details'|'definition'|'columns'>('details')
-  const meta=TABLE_META[table.name]||{size:'—',updated:'—',owner:'—',contact:'—'}
+  type RuleType = 'metric'|'interpretation'|'formatting'|'exclusion'|'preferred_field'|'join_note'|'general_note'
+  type RuleRow = { id:string, type:RuleType, target:string, value:string }
 
-  // Position panel — keep it on screen
-  const panelW=280, panelH=340
-  const left=Math.min(x, window.innerWidth-panelW-12)
-  const top=Math.min(y, window.innerHeight-panelH-12)
+  const [activeTab,setActiveTab]=useState<'summary'|'admin'|'ai_notes'>('summary')
+  const [metaLoading,setMetaLoading]=useState(false)
+  const [metaSaving,setMetaSaving]=useState(false)
+  const [canEditMeta,setCanEditMeta]=useState(false)
+  const [selectedCol,setSelectedCol]=useState<string>('')
+  const [tableMeta,setTableMeta]=useState<any>({ summary:'', owner:'', point_of_contact:'', teams:[], preferred_metric_logic:'', additional_notes:'', rules:[] })
+  const [columnMeta,setColumnMeta]=useState<Record<string, any>>({})
+
+  const schema = table?.schema || 'public'
+  const joinCount = inferJoinCount(table)
+  const panelW = 420
 
   useEffect(()=>{
     const close=(e:MouseEvent)=>{
       const el=document.getElementById('table-info-panel')
-      if(el&&!el.contains(e.target as Node))onClose()
+      if(el && !el.contains(e.target as Node)) onClose()
     }
-    // Small delay so the triggering click doesn't immediately close
-    const t=setTimeout(()=>document.addEventListener('mousedown',close),100)
-    return()=>{clearTimeout(t);document.removeEventListener('mousedown',close)}
-  },[])
+    const t=setTimeout(()=>document.addEventListener('mousedown', close), 100)
+    return()=>{ clearTimeout(t); document.removeEventListener('mousedown', close) }
+  },[onClose])
+
+  useEffect(()=>{
+    let cancelled = false
+    ;(async()=>{
+      try{
+        setMetaLoading(true)
+        const res = await fetch(`/api/metadata?table=${encodeURIComponent(table.name)}&schema=${encodeURIComponent(schema)}`, { cache:'no-store' })
+        const data = await res.json().catch(()=>({}))
+        if(cancelled) return
+        if(res.ok){
+          setCanEditMeta(!!data?.canEdit)
+          setTableMeta({
+            summary: data?.tableMeta?.summary || table?.desc || '',
+            owner: data?.tableMeta?.owner || '',
+            point_of_contact: data?.tableMeta?.point_of_contact || '',
+            teams: Array.isArray(data?.tableMeta?.teams) ? data.tableMeta.teams : (table?.teams || []),
+            preferred_metric_logic: data?.tableMeta?.preferred_metric_logic || '',
+            additional_notes: data?.tableMeta?.additional_notes || '',
+            rules: Array.isArray(data?.tableMeta?.rules) ? data.tableMeta.rules.map((r:any)=>({ id:r.id || crypto.randomUUID(), type:r.type || 'general_note', target:r.target || '', value:r.value || '' })) : [],
+          })
+          setColumnMeta(data?.columnMeta || {})
+        }
+        setSelectedCol(prev=>prev || table?.columns?.[0]?.n || '')
+      } finally {
+        if(!cancelled) setMetaLoading(false)
+      }
+    })()
+    return()=>{cancelled=true}
+  },[table?.name, schema])
+
+  const saveMetadata = async()=>{
+    try{
+      setMetaSaving(true)
+      const payload = {
+        table: table.name,
+        schema,
+        tableMeta: {
+          summary: tableMeta.summary || '',
+          owner: tableMeta.owner || '',
+          point_of_contact: tableMeta.point_of_contact || '',
+          teams: Array.isArray(tableMeta.teams) ? tableMeta.teams : String(tableMeta.teams || '').split(',').map((s:string)=>s.trim()).filter(Boolean),
+          preferred_metric_logic: tableMeta.preferred_metric_logic || '',
+          additional_notes: tableMeta.additional_notes || '',
+          rules: Array.isArray(tableMeta.rules) ? tableMeta.rules : [],
+        },
+        columnMeta,
+      }
+      const res = await fetch('/api/metadata', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      })
+      const data = await res.json().catch(()=>({}))
+      if(!res.ok) throw new Error(data?.error || 'Failed to save metadata')
+    }catch(err:any){
+      alert(err?.message || 'Failed to save metadata')
+    }finally{
+      setMetaSaving(false)
+    }
+  }
+
+  const updateRule = (id:string, patch:Partial<RuleRow>)=> setTableMeta((m:any)=>({...m, rules:(m.rules||[]).map((r:RuleRow)=>r.id===id?{...r,...patch}:r)}))
+  const addRule = ()=> setTableMeta((m:any)=>({...m, rules:[...(m.rules||[]), { id:crypto.randomUUID(), type:'metric', target:'', value:'' }]}))
+  const removeRule = (id:string)=> setTableMeta((m:any)=>({...m, rules:(m.rules||[]).filter((r:RuleRow)=>r.id!==id)}))
+
+  const selectedColumnMeta = columnMeta[selectedCol] || { description:'', ai_notes:'', preferred_label:'', display_format:'', synonyms:[] }
+  const recommended = table?.sampleQ?.length ? table.sampleQ : [`Show me all ${table.name}`, `What does ${table.name} track?`, `Which ${table.name} records matter most?`]
+  const right = 0
+  const top = 49
 
   return(
-    <div id="table-info-panel" style={{
-      position:'fixed',left,top,width:panelW,
-      background:'#fff',borderRadius:9,border:`1px solid ${C.cardBorder}`,
-      boxShadow:'0 8px 28px rgba(0,0,0,0.14)',zIndex:600,overflow:'hidden',
-      fontFamily:'Inter,sans-serif',
-    }} onClick={e=>e.stopPropagation()}>
-
-      {/* Header */}
-      <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,background:C.tableHead,display:'flex',alignItems:'center',gap:7}}>
+    <div id="table-info-panel" style={{ position:'fixed', right, top:58, bottom:18, width:panelW, background:'#fff', border:`1px solid ${C.cardBorder}`, borderRadius:24, boxShadow:'0 24px 54px rgba(10,35,28,0.10)', zIndex:600, overflow:'hidden', fontFamily:'Inter,sans-serif', display:'flex', flexDirection:'column' }} onClick={e=>e.stopPropagation()}>
+      <div className="browserBar" style={{height:40,borderBottom:`1px solid ${C.cardBorder}`}}>
+        <div style={{display:'flex',gap:6,marginRight:8}}><span style={{width:8,height:8,borderRadius:'50%',background:'#D1D9D5',display:'block'}}></span><span style={{width:8,height:8,borderRadius:'50%',background:'#D1D9D5',display:'block'}}></span><span style={{width:8,height:8,borderRadius:'50%',background:'#D1D9D5',display:'block'}}></span></div>
         <div style={{width:8,height:8,borderRadius:'50%',background:table.color,flexShrink:0}}/>
-        <span style={{fontSize:12,fontWeight:700,color:C.text,fontFamily:"'JetBrains Mono'",flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{table.name}</span>
+        <span style={{fontSize:12.5,fontWeight:800,color:C.text,fontFamily:"'JetBrains Mono'",flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{table.name}</span>
         <button onClick={onClose} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,lineHeight:1,padding:0}}>×</button>
       </div>
 
-      {/* Tabs */}
       <div style={{display:'flex',borderBottom:`1px solid ${C.cardBorder}`,background:'#FAFAFA'}}>
-        {(['details','definition','columns'] as const).map(t=>(
-          <button key={t} onClick={()=>setActiveTab(t)}
-            style={{flex:1,padding:'7px 0',fontSize:11.5,fontWeight:activeTab===t?600:400,
-              color:activeTab===t?C.accent:C.textLight,background:'none',border:'none',
-              borderBottom:`2px solid ${activeTab===t?C.accent:'transparent'}`,cursor:'pointer',
-              textTransform:'capitalize',fontFamily:'Inter,sans-serif'}}>
-            {t}
-          </button>
-        ))}
+        <button onClick={()=>setActiveTab('summary')} style={{flex:1,padding:'9px 0',fontSize:12,fontWeight:600,color:activeTab==='summary'?C.accent:C.textLight,background:'none',border:'none',borderBottom:`2px solid ${activeTab==='summary'?C.accent:'transparent'}`,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Summary</button>
+        <button onClick={()=>setActiveTab('admin')} style={{flex:1,padding:'9px 0',fontSize:12,fontWeight:600,color:activeTab==='admin'?C.accent:C.textLight,background:'none',border:'none',borderBottom:`2px solid ${activeTab==='admin'?C.accent:'transparent'}`,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Admin</button>
+        <button onClick={()=>setActiveTab('ai_notes')} style={{flex:1,padding:'9px 0',fontSize:12,fontWeight:600,color:activeTab==='ai_notes'?C.accent:C.textLight,background:'none',border:'none',borderBottom:`2px solid ${activeTab==='ai_notes'?C.accent:'transparent'}`,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>AI Notes</button>
       </div>
 
-      {/* Tab content */}
-      <div style={{padding:'10px 12px',maxHeight:220,overflowY:'auto'}}>
+      <div style={{flex:1,overflowY:activeTab==='ai_notes'?'hidden':'auto',padding:'14px 14px 18px',position:'relative'}}>
+        {metaLoading && <OverlaySpinner label='Loading table details…' />}
 
-        {activeTab==='details'&&(
-          <div style={{display:'flex',flexDirection:'column',gap:0}}>
-            {/* Data preview button */}
-            <button onClick={()=>{onPreview(table);onClose()}}
-              style={{width:'100%',padding:'6px 10px',marginBottom:8,borderRadius:5,border:`1px solid ${C.cardBorder}`,
-                background:'#F8FAFD',color:C.text,fontSize:12,cursor:'pointer',fontFamily:'Inter,sans-serif',
-                display:'flex',alignItems:'center',gap:6,fontWeight:500}}
-              onMouseOver={e=>{e.currentTarget.style.background=C.accentBg;e.currentTarget.style.borderColor=C.accent}}
-              onMouseOut={e=>{e.currentTarget.style.background='#F8FAFD';e.currentTarget.style.borderColor=C.cardBorder}}>
-              <span style={{fontSize:13}}>⊞</span> Data preview
-            </button>
-            {[
-              ['Number of rows', table.rows],
-              ['Size',           meta.size],
-              ['Last updated',   meta.updated],
-              ['Owner',          meta.owner],
-              ['Point of contact', meta.contact],
-              ['Teams',          table.teams?.join(', ')||'—'],
-            ].map(([k,v])=>(
-              <div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',padding:'4px 0',borderBottom:`1px solid #F8FAFD`}}>
-                <span style={{fontSize:11.5,color:C.textLight,flexShrink:0,marginRight:8}}>{k}</span>
-                <span style={{fontSize:11.5,fontWeight:500,color:C.text,textAlign:'right',wordBreak:'break-all'}}>{v}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {activeTab==='definition'&&(
+        {!metaLoading && activeTab==='summary' && (
           <div>
-            <p style={{fontSize:12.5,color:C.text,lineHeight:1.65,margin:0}}>{table.desc||'No description available.'}</p>
-            {table.sampleQ?.length>0&&(
-              <div style={{marginTop:10}}>
-                <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Sample questions</div>
-                {table.sampleQ.map((q:string)=>(
-                  <div key={q} onClick={()=>{onAsk(q);onClose()}}
-                    style={{fontSize:12,color:C.accent,padding:'3px 0',cursor:'pointer',lineHeight:1.5}}
-                    onMouseOver={e=>(e.currentTarget as HTMLElement).style.textDecoration='underline'}
-                    onMouseOut={e=>(e.currentTarget as HTMLElement).style.textDecoration='none'}>
-                    → {q}
-                  </div>
-                ))}
-              </div>
-            )}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:14}}>
+              {[[ 'Rows', table.rows || '—' ], [ 'Joins', String(joinCount) ]].map(([k,v])=>(
+                <div key={String(k)} style={{background:'#FBFDFC',border:`1px solid ${C.cardBorder}`,borderRadius:16,padding:'12px 12px'}}>
+                  <div style={{fontSize:10,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:700,marginBottom:4}}>{k}</div>
+                  <div style={{fontSize:14,fontWeight:700,color:C.text}}>{v}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Columns</div>
+            <div style={{background:'#FBFDFC',border:`1px solid ${C.cardBorder}`,borderRadius:16,overflow:'hidden',marginBottom:14}}>
+              {(table.columns||[]).map((c:any,i:number)=>(
+                <div key={c.n} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',borderTop:i?`1px solid ${C.cardBorder}`:'none'}}>
+                  <span style={{width:7,height:7,borderRadius:'50%',background:TC[c.t]||'#8A9BB0',flexShrink:0}}/>
+                  <span style={{fontSize:10.5,color:TC[c.t]||C.textLight,fontFamily:"'JetBrains Mono'",width:32,flexShrink:0}}>{c.t}</span>
+                  <span style={{fontFamily:"'JetBrains Mono'",fontSize:12.5,color:C.text}}>{c.n}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={{fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Summary</div>
+            <div style={{display:'grid',gridTemplateColumns:'140px 1fr',rowGap:8,columnGap:10,marginBottom:14}}>
+              <div style={{fontSize:12,color:C.textLight}}>Name</div><div style={{fontSize:12.5,color:C.text,fontWeight:600}}>{table.name}</div>
+              <div style={{fontSize:12,color:C.textLight}}>Point of contact</div><div style={{fontSize:12.5,color:C.text,fontWeight:600}}>{tableMeta.point_of_contact || '—'}</div>
+              <div style={{fontSize:12,color:C.textLight}}>Team</div><div style={{fontSize:12.5,color:C.text,fontWeight:600}}>{Array.isArray(tableMeta.teams)&&tableMeta.teams.length?tableMeta.teams.join(', '):(table.teams?.join(', ')||'—')}</div>
+              <div style={{fontSize:12,color:C.textLight,alignSelf:'start'}}>Summary</div><div style={{fontSize:12.5,color:C.text,lineHeight:1.55}}>{tableMeta.summary || table.desc || 'No summary yet.'}</div>
+            </div>
+
+            <div style={{fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Recommended questions to ask AI</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
+              {recommended.map((q:string)=><button key={q} onClick={()=>{onAsk(q);onClose()}} style={{textAlign:'left',padding:'7px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,background:'#fff',fontSize:12.5,color:C.textMuted,cursor:'pointer'}}>{q}</button>)}
+            </div>
           </div>
         )}
 
-        {activeTab==='columns'&&(
-          <div style={{display:'flex',flexDirection:'column',gap:3}}>
-            {table.columns?.map((col:any)=>(
-              <div key={col.n} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 6px',borderRadius:4,background:'#F8FAFD'}}>
-                <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,background:TC[col.t]||'#8A9BB0'}}/>
-                <span style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{col.n}</span>
-                <span style={{fontSize:10,color:C.textLight,flexShrink:0,fontFamily:"'JetBrains Mono'"}}>{col.t}</span>
+        {!metaLoading && activeTab==='admin' && (
+          <div style={{display:'grid',gap:12}}>
+            <div>
+              <div style={{fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Summary</div>
+              <textarea value={tableMeta.summary || ''} onChange={e=>setTableMeta((m:any)=>({...m,summary:e.target.value}))} placeholder='Business summary shown to everyone' style={{width:'100%',minHeight:84,padding:'10px 12px',border:`1px solid ${C.cardBorder}`,borderRadius:8,fontSize:12.5,fontFamily:'Inter,sans-serif',resize:'vertical'}}/>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+              <input value={tableMeta.point_of_contact || ''} onChange={e=>setTableMeta((m:any)=>({...m,point_of_contact:e.target.value}))} placeholder="Point of contact" style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+              <input value={tableMeta.owner || ''} onChange={e=>setTableMeta((m:any)=>({...m,owner:e.target.value}))} placeholder="Owner" style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+              <input value={Array.isArray(tableMeta.teams)?tableMeta.teams.join(', '):String(tableMeta.teams || '')} onChange={e=>setTableMeta((m:any)=>({...m,teams:e.target.value.split(',').map((s:string)=>s.trim()).filter(Boolean)}))} placeholder="Teams (comma separated)" style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5,gridColumn:'1 / span 2'}}/>
+            </div>
+            <div>
+              <div style={{fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Per-column settings</div>
+              <div style={{display:'grid',gridTemplateColumns:'130px 1fr',gap:10}}>
+                <div style={{maxHeight:240,overflowY:'auto',border:`1px solid ${C.cardBorder}`,borderRadius:8,padding:4}}>
+                  {(table.columns||[]).map((col:any)=>{
+                    const active = selectedCol===col.n
+                    return <button key={col.n} onClick={()=>setSelectedCol(col.n)} style={{display:'block',width:'100%',textAlign:'left',padding:'7px 8px',marginBottom:4,borderRadius:6,border:`1px solid ${active?C.accent:C.cardBorder}`,background:active?C.accentBg:'#fff',fontFamily:"'JetBrains Mono'",fontSize:11.5,color:active?C.accentDark:C.text,cursor:'pointer'}}>{col.n}</button>
+                  })}
+                </div>
+                <div style={{display:'grid',gap:8}}>
+                  <input value={selectedColumnMeta.preferred_label || ''} onChange={e=>setColumnMeta((prev:any)=>({...prev,[selectedCol]:{...(prev[selectedCol]||{}),preferred_label:e.target.value}}))} placeholder="Preferred label" style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+                  <input value={selectedColumnMeta.display_format || ''} onChange={e=>setColumnMeta((prev:any)=>({...prev,[selectedCol]:{...(prev[selectedCol]||{}),display_format:e.target.value}}))} placeholder="Display format" style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+                  <input value={Array.isArray(selectedColumnMeta.synonyms)?selectedColumnMeta.synonyms.join(', '):''} onChange={e=>setColumnMeta((prev:any)=>({...prev,[selectedCol]:{...(prev[selectedCol]||{}),synonyms:e.target.value.split(',').map((s:string)=>s.trim()).filter(Boolean)}}))} placeholder="Synonyms (comma separated)" style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+                  <textarea value={selectedColumnMeta.description || ''} onChange={e=>setColumnMeta((prev:any)=>({...prev,[selectedCol]:{...(prev[selectedCol]||{}),description:e.target.value}}))} placeholder="Column summary" style={{minHeight:72,padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5,fontFamily:'Inter,sans-serif',resize:'vertical'}}/>
+                  <textarea value={selectedColumnMeta.ai_notes || ''} onChange={e=>setColumnMeta((prev:any)=>({...prev,[selectedCol]:{...(prev[selectedCol]||{}),ai_notes:e.target.value}}))} placeholder="Column AI note" style={{minHeight:72,padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5,fontFamily:'Inter,sans-serif',resize:'vertical'}}/>
+                </div>
               </div>
-            ))}
+            </div>
+            <div style={{display:'flex',justifyContent:'flex-end'}}><button onClick={saveMetadata} disabled={metaSaving} style={{padding:'8px 14px',border:'none',borderRadius:6,background:C.accent,color:'#fff',fontWeight:600,cursor:'pointer',opacity:metaSaving?0.7:1}}>{metaSaving?'Saving…':'Save admin notes'}</button></div>
+          </div>
+        )}
+
+        {!metaLoading && activeTab==='ai_notes' && (
+          <div style={{display:'grid',gap:12,height:'100%',alignContent:'start'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div style={{fontSize:12.5,fontWeight:700,color:C.text}}>Rules</div>
+              <button onClick={addRule} style={{padding:'6px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,background:'#fff',fontSize:12.5,cursor:'pointer'}}>+ Add rule</button>
+            </div>
+            <div style={{display:'grid',gap:8}}>
+              {(tableMeta.rules||[]).length===0 && <div style={{fontSize:12.5,color:C.textLight}}>No rules yet.</div>}
+              {(tableMeta.rules||[]).map((rule:RuleRow)=>(
+                <div key={rule.id} style={{display:'grid',gridTemplateColumns:'120px 1fr 1.3fr 32px',gap:8,alignItems:'center'}}>
+                  <select value={rule.type} onChange={e=>updateRule(rule.id,{type:e.target.value as RuleType,target:'',value:''})} style={{padding:'8px 8px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}>
+                    <option value='metric'>Metric</option>
+                    <option value='interpretation'>Interpretation</option>
+                    <option value='formatting'>Formatting</option>
+                    <option value='exclusion'>Exclusion</option>
+                    <option value='preferred_field'>Preferred field</option>
+                    <option value='join_note'>Join note</option>
+                    <option value='general_note'>General note</option>
+                  </select>
+
+                  {rule.type==='formatting' ? (
+                    <select value={rule.target} onChange={e=>updateRule(rule.id,{target:e.target.value})} style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}>
+                      <option value=''>Select column</option>
+                      <option value='all date fields'>All date fields</option>
+                      <option value='all amount fields'>All amount fields</option>
+                      <option value='all currency fields'>All currency fields</option>
+                      {(table.columns||[]).map((col:any)=><option key={col.n} value={col.n}>{col.n}</option>)}
+                    </select>
+                  ) : rule.type==='preferred_field' ? (
+                    <select value={rule.target} onChange={e=>updateRule(rule.id,{target:e.target.value})} style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}>
+                      <option value=''>Select concept / column</option>
+                      <option value='client name'>Client name</option>
+                      <option value='matter name'>Matter name</option>
+                      <option value='status'>Status</option>
+                      {(table.columns||[]).map((col:any)=><option key={col.n} value={col.n}>{col.n}</option>)}
+                    </select>
+                  ) : (
+                    <input value={rule.target} onChange={e=>updateRule(rule.id,{target:e.target.value})} placeholder={rule.type==='metric'?'Metric name':rule.type==='interpretation'?'Phrase or term':rule.type==='exclusion'?'What to exclude':rule.type==='join_note'?'Join target':'Target'} style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+                  )}
+
+                  <input value={rule.value} onChange={e=>updateRule(rule.id,{value:e.target.value})} placeholder={rule.type==='formatting'?'Format or note (e.g. MM/DD/YYYY)':rule.type==='interpretation'?'Meaning / logic':rule.type==='metric'?'How it should be calculated':rule.type==='preferred_field'?'Which field to prefer and why':rule.type==='exclusion'?'Exclusion rule':rule.type==='join_note'?'Join logic / note':'Logic / meaning / caveat'} style={{padding:'8px 10px',border:`1px solid ${C.cardBorder}`,borderRadius:6,fontSize:12.5}}/>
+
+                  <button onClick={()=>removeRule(rule.id)} style={{width:32,height:32,border:`1px solid ${C.cardBorder}`,borderRadius:6,background:'#fff',color:C.danger,cursor:'pointer'}}>×</button>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{fontSize:10.5,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Additional notes</div>
+              <textarea value={tableMeta.additional_notes || ''} onChange={e=>setTableMeta((m:any)=>({...m,additional_notes:e.target.value}))} placeholder='Anything unusual that should still be fed to the AI...' style={{width:'100%',minHeight:96,padding:'10px 12px',border:`1px solid ${C.cardBorder}`,borderRadius:8,fontSize:12.5,fontFamily:'Inter,sans-serif',resize:'vertical'}}/>
+            </div>
+            <div style={{display:'flex',justifyContent:'flex-end'}}><button onClick={saveMetadata} disabled={metaSaving} style={{padding:'8px 14px',border:'none',borderRadius:6,background:C.accent,color:'#fff',fontWeight:600,cursor:'pointer',opacity:metaSaving?0.7:1}}>{metaSaving?'Saving…':'Save AI notes'}</button></div>
           </div>
         )}
       </div>
 
-      {/* Action buttons — divider + quick actions */}
       {showActions&&(
-        <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'6px 8px',display:'flex',flexDirection:'column',gap:1,background:'#FAFAFA'}}>
+        <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'10px 12px',display:'flex',flexDirection:'column',gap:6,background:'#FAFAFA'}}>
           {[
             ['🗂 Open as spreadsheet', ()=>{onGrid(table);onClose()}],
+            ['👁 View top 100 rows',    ()=>{onPreview(table);onClose()}],
             ['💬 Ask a question',      ()=>{onAsk(`Tell me about the ${table.name} table`);onClose()}],
-            ['ℹ️ Table details',        ()=>{onDrawer(table);onClose()}],
-            ['📋 Copy table name',     ()=>{navigator.clipboard?.writeText(table.name);onClose()}],
+                        ['📋 Copy table name',     ()=>{navigator.clipboard?.writeText(table.name);onClose()}],
           ].map(([label,fn]:any)=>(
             <button key={label} onClick={fn}
-              style={{display:'flex',alignItems:'center',width:'100%',padding:'6px 8px',background:'none',
-                border:'none',fontSize:12,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',
-                textAlign:'left',borderRadius:4}}
-              onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'}
-              onMouseOut={e=>e.currentTarget.style.background='none'}>
+              style={{display:'flex',alignItems:'center',width:'100%',padding:'6px 4px',background:'none', border:'none',fontSize:12.5,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif', textAlign:'left',borderRadius:4}}>
               {label}
             </button>
           ))}
@@ -434,7 +819,6 @@ function TableInfoPanel({table,x,y,onClose,onAsk,onPreview,onGrid,onDrawer,showA
   )
 }
 
-
 function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:number,y:number,table:any,onClose:()=>void,onAsk:(q:string)=>void,onPreview:(t:any)=>void,onDrawer:(t:any)=>void,onGrid:(t:any)=>void}) {
   useEffect(()=>{const h=()=>onClose();window.addEventListener('click',h);return()=>window.removeEventListener('click',h)},[])
   return(
@@ -442,10 +826,10 @@ function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:numb
       <div style={{padding:'5px 11px',borderBottom:`1px solid ${C.cardBorder}`,background:C.tableHead}}>
         <span style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em'}}>{table.name}</span>
       </div>
-      {[['Open as spreadsheet',()=>{onGrid(table);onClose()}],['View top 100 rows',()=>{onPreview(table);onClose()}],['Ask a question',()=>{onAsk(`Tell me about the ${table.name} table`);onClose()}],['Table details',()=>{onDrawer(table);onClose()}],['Copy table name',()=>{navigator.clipboard?.writeText(table.name);onClose()}]].map(([label,fn]:any)=>(
+      {[['Open as spreadsheet',()=>{onGrid(table);onClose()}],['View top 100 rows',()=>{onPreview(table);onClose()}],['Ask a question',()=>{onAsk(`Tell me about the ${table.name} table`);onClose()}],['Copy table name',()=>{navigator.clipboard?.writeText(table.name);onClose()}]].map(([label,fn]:any)=>(
         <button key={label} onClick={fn}
           style={{display:'flex',alignItems:'center',width:'100%',padding:'8px 12px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-          onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>
+          onMouseOver={e=>{e.currentTarget.style.background='#FFFFFF'; e.currentTarget.style.borderColor=C.cardBorder; e.currentTarget.style.boxShadow='0 10px 24px rgba(10,35,28,0.05)'}} onMouseOut={e=>e.currentTarget.style.background='none'}>
           {label}
         </button>
       ))}
@@ -454,12 +838,86 @@ function ContextMenu({x,y,table,onClose,onAsk,onPreview,onDrawer,onGrid}:{x:numb
 }
 
 // ── Relationships Diagram ─────────────────────────────────────────────────────
-function RelationshipsDiagram({onTableClick,onTableContext}:{onTableClick:(t:any)=>void,onTableContext?:(t:any,x:number,y:number)=>void}) {
+function RelationshipsDiagram({onTableClick,onTableContext,displayTables=TABLES}:{onTableClick:(t:any)=>void,onTableContext?:(t:any,x:number,y:number)=>void,displayTables?:any[]}) {
   const [hov,setHov]=useState<string|null>(null)
   const [hovEdge,setHovEdge]=useState<string|null>(null)
   const [tooltip,setTooltip]=useState<{x:number,y:number,label:string}|null>(null)
-  const edges=TABLES.flatMap(t=>t.joins.map(j=>({from:t.name,to:j.to,on:j.on,key:`${t.name}-${j.to}`}))).filter((e,i,arr)=>arr.findIndex(x=>(x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from))===i)
-  const pos=(name:string)=>TABLES.find(t=>t.name===name)||{x:0,y:0,color:C.accent}
+
+  // Infer relationships from column naming conventions when explicit FK joins are missing
+  // e.g. billing_rates.attorney_id → attorneys.id
+  const inferredEdges = useMemo(()=>{
+    const allNames = new Set(displayTables.map((t:any)=>t.name))
+    const edges:any[] = []
+    const seen = new Set<string>()
+    displayTables.forEach((t:any)=>{
+      ;(t.columns||[]).forEach((c:any)=>{
+        if(!c.n.endsWith('_id')||c.n==='id') return
+        const base = c.n.slice(0,-3) // e.g. attorney_id → attorney
+        const target = displayTables.find((t2:any)=>
+          t2.name===base||t2.name===base+'s'||t2.name===base+'es'||t2.name.startsWith(base)
+        )
+        if(!target||target.name===t.name) return
+        const key=[t.name,target.name].sort().join('—')
+        if(seen.has(key)) return
+        seen.add(key)
+        edges.push({from:t.name,to:target.name,on:c.n,key:`${t.name}-${target.name}`})
+      })
+    })
+    // Also use explicit joins if present
+    displayTables.forEach((t:any)=>{
+      ;(t.joins||[]).forEach((j:any)=>{
+        const key=[t.name,j.to].sort().join('—')
+        if(seen.has(key)) return
+        seen.add(key)
+        edges.push({from:t.name,to:j.to,on:j.on,key:`${t.name}-${j.to}`})
+      })
+    })
+    return edges
+  },[displayTables])
+
+  const isNorthwind = displayTables===TABLES||displayTables.some((t:any)=>t.name==='order_details')
+
+  // Real company: structured relationship list
+  if(!isNorthwind) return (
+    <div style={{padding:'20px 24px',fontFamily:"'Inter',sans-serif"}}>
+      <h2 style={{fontSize:17,fontWeight:600,color:C.text,marginBottom:4,letterSpacing:'-0.3px'}}>Table Relationships</h2>
+      <p style={{fontSize:12.5,color:C.textMuted,marginBottom:20}}>Inferred from column naming conventions · Click any table to inspect</p>
+      {inferredEdges.length===0&&(
+        <div style={{textAlign:'center',padding:'40px 20px',color:C.textLight,fontSize:13.5}}>No relationships detected yet — run AI analysis in Admin to configure.</div>
+      )}
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {inferredEdges.map((e:any)=>{
+          const fromTbl=displayTables.find((t:any)=>t.name===e.from)
+          const toTbl=displayTables.find((t:any)=>t.name===e.to)
+          return(
+            <div key={e.key} style={{background:'#fff',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:'11px 16px',display:'flex',alignItems:'center',gap:12}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,minWidth:160}}>
+                <div style={{width:8,height:8,borderRadius:'50%',background:fromTbl?.color||C.accent}}/>
+                <span style={{fontFamily:"'JetBrains Mono'",fontSize:12.5,fontWeight:600,color:C.text}}>{fromTbl?.displayName||e.from}</span>
+              </div>
+              <div style={{flex:1,display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:11,background:'#F1F5F9',padding:'2px 8px',borderRadius:4,fontFamily:"'JetBrains Mono'",color:C.textMuted}}>{e.on}</span>
+                <span style={{color:C.textLight,fontSize:14}}>→</span>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <div style={{width:8,height:8,borderRadius:'50%',background:toTbl?.color||C.accent}}/>
+                  <span style={{fontFamily:"'JetBrains Mono'",fontSize:12.5,fontWeight:600,color:C.text}}>{toTbl?.displayName||e.to}</span>
+                </div>
+                <span style={{fontSize:11,background:'#F1F5F9',padding:'2px 8px',borderRadius:4,fontFamily:"'JetBrains Mono'",color:C.textMuted}}>id</span>
+              </div>
+              <button onClick={()=>onTableClick(fromTbl||{name:e.from})}
+                style={{fontSize:11,padding:'4px 10px',borderRadius:5,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0}}>
+                Inspect
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+
+  // Northwind: original SVG diagram
+  const edges=displayTables.flatMap((t:any)=>(t.joins||[]).map((j:any)=>({from:t.name,to:j.to,on:j.on,key:`${t.name}-${j.to}`}))).filter((e:any,i:number,arr:any[])=>arr.findIndex((x:any)=>(x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from))===i)
+  const pos=(name:string)=>displayTables.find((t:any)=>t.name===name)||{x:0,y:0,color:C.accent}
   return(
     <div style={{padding:24,position:'relative'}}>
       <h2 style={{fontSize:17,fontWeight:600,color:C.text,marginBottom:2,letterSpacing:'-0.3px'}}>Table Relationships</h2>
@@ -489,7 +947,7 @@ function RelationshipsDiagram({onTableClick,onTableContext}:{onTableClick:(t:any
           )})}
         </svg>
         <div style={{display:'flex',gap:12,flexWrap:'wrap',borderTop:`1px solid ${C.cardBorder}`,paddingTop:12,marginTop:8}}>
-          {TABLES.map(t=><div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
+          {displayTables.map((t:any)=><div key={t.name} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}} onClick={()=>onTableClick(t)} onContextMenu={ev=>{ev.preventDefault();if(onTableContext)onTableContext(t,ev.clientX,ev.clientY)}}>
             <div style={{width:7,height:7,borderRadius:'50%',background:t.color}}/><span style={{fontSize:11.5,color:C.textMuted,fontFamily:"'JetBrains Mono'"}}>{t.name}</span>
           </div>)}
         </div>
@@ -527,20 +985,7 @@ function ConfidenceNote({confidence,uncertainAbout,assumptions,suggestedClarific
 
 // ── Follow-up Suggestions ─────────────────────────────────────────────────────
 function FollowUpSuggestions({rows,fields,onAsk}:{rows:any[],fields:string[],onAsk:(q:string)=>void}) {
-  const suggestions=useMemo(()=>{
-    const sugs:string[]=[]
-    const hasNum=fields.some(f=>String(rows[0]?.[f]??'').match(/^-?\d+(\.\d+)?$/))
-    const numF=fields.find(f=>String(rows[0]?.[f]??'').match(/^-?\d+(\.\d+)?$/))
-    const strF=fields.find(f=>!String(rows[0]?.[f]??'').match(/^-?\d+(\.\d+)?$/))
-    if(rows.length>=10) sugs.push('Show me just the top 5 instead')
-    if(hasNum&&numF) sugs.push(`What's the average ${numF?.replace(/_/g,' ')}?`)
-    if(strF&&rows.length>1) sugs.push(`Filter to only show results where ${strF?.replace(/_/g,' ')} contains a specific value`)
-    if(fields.some(f=>f.includes('country')||f.includes('region'))) sugs.push('Break this down by country')
-    if(fields.some(f=>f.includes('date')||f.includes('month')||f.includes('year'))) sugs.push('Show me the trend over time')
-    if(hasNum) sugs.push('Which rows are above the average?')
-    sugs.push('Explain what this data is telling us')
-    return sugs.slice(0,3)
-  },[fields,rows])
+  const suggestions=useMemo(()=>buildProfessionalFollowUps(rows, fields),[fields,rows])
   return(
     <div style={{marginTop:9,display:'flex',flexWrap:'wrap',gap:5}}>
       {suggestions.map(s=>(
@@ -556,25 +1001,102 @@ function FollowUpSuggestions({rows,fields,onAsk}:{rows:any[],fields:string[],onA
 }
 
 // ── Qwezy Chat Tab ────────────────────────────────────────────────────────────
-function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?:Conversation)=>void,initialInput?:string,onInputConsumed?:()=>void}) {
-  const [conversations,setConversations]=useState<Conversation[]>([
-    {id:'c0',title:'New conversation',messages:[],createdAt:new Date(),updatedAt:new Date()}
-  ])
-  const [activeId,setActiveId]=useState('c0')
+function QwezyTab({onAsk,initialInput='',onInputConsumed,isDemo=true,dbConnected=true,liveSchema=[]}:{onAsk:(q:string,conv?:Conversation)=>void,initialInput?:string,onInputConsumed?:()=>void,isDemo?:boolean,dbConnected?:boolean,liveSchema?:any[]}) {
+  const [conversations,setConversations]=useState<Conversation[]>([])
+  const [activeId,setActiveId]=useState('')
+  const [recentQuestions,setRecentQuestions]=useState<string[]>([])
+  const [starterShuffleSeed] = useState(() => Date.now())
+  const [conversationsLoaded,setConversationsLoaded]=useState(false)
+  const [conversationsError,setConversationsError]=useState('')
+  const [sidebarMenu,setSidebarMenu]=useState<{x:number,y:number,id:string}|null>(null)
+  const skipNextSyncRef=useRef(true)
 
-  // Load saved conversations after mount
+  // Load recent team questions on mount
   useEffect(()=>{
+    if(!isDemo){
+      fetch('/api/query-history').then(r=>r.ok?r.json():null).then(d=>{
+        if(d?.questions?.length>0){ const qs=d.questions.map((q:string)=>cleanLearnedQuestion(q)).filter((q:string)=>q && !isWeakLearnedQuestion(q)); setRecentQuestions(qs) }
+      }).catch(()=>{})
+    }
+  },[isDemo])
+
+  const createConversationOnServer = useCallback(async (title='New conversation') => {
+    const res = await fetch('/api/conversations', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ title })
+    })
+    if (!res.ok) throw new Error('Failed to create conversation')
+    const data = await res.json()
+    return normalizeConversation(data.conversation)
+  }, [])
+
+  const syncConversationToServer = useCallback(async (conv:Conversation) => {
+    await fetch('/api/conversations', {
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        id: conv.id,
+        title: conv.title,
+        messages: conv.messages.map(m=>({
+          id:m.id,
+          role:m.role,
+          content:m.content,
+          sql:m.sql,
+          rows:m.rows,
+          fields:m.fields,
+          duration:m.duration,
+          confidence:m.confidence,
+          assumptions:m.assumptions,
+          uncertainAbout:m.uncertainAbout,
+          suggestedClarification:m.suggestedClarification,
+          rewritten:m.rewritten,
+          timestamp:m.timestamp,
+        }))
+      })
+    })
+  }, [])
+
+  const refreshUsageMetrics = useCallback(async()=>{
     try{
-      const saved=sessionStorage.getItem('qwezy_convs')
-      if(saved){
-        const parsed=JSON.parse(saved)
-        const convs=parsed.map((c:any)=>({...c,createdAt:new Date(c.createdAt),updatedAt:new Date(c.updatedAt),messages:c.messages.map((m:any)=>({...m,timestamp:new Date(m.timestamp)}))}))
-        setConversations(convs)
-      }
-      const savedId=sessionStorage.getItem('qwezy_active_id')
-      if(savedId)setActiveId(savedId)
+      const res = await fetch('/api/usage', { cache:'no-store' })
+      if(!res.ok) return
+      const data = await res.json()
+      window.dispatchEvent(new CustomEvent('qwezy:usage-updated', { detail: { count: data?.count ?? null } }))
     }catch{}
   },[])
+
+  useEffect(()=>{
+    let cancelled = false
+    ;(async ()=>{
+      try{
+        const res = await fetch('/api/conversations', { cache: 'no-store' })
+        const data = await res.json().catch(()=>({}))
+        if(!res.ok) throw new Error(data?.error || 'Failed to load conversations')
+        if (cancelled) return
+        setConversationsError(data?.messages_error || '')
+        const loaded = (data.conversations || []).map(normalizeConversation)
+        if (loaded.length > 0) {
+          setConversations(loaded)
+          setActiveId(prev=>loaded.some((c:any)=>c.id===prev)?prev:loaded[0].id)
+        } else {
+          const fresh = await createConversationOnServer()
+          if (cancelled) return
+          setConversations([fresh])
+          setActiveId(fresh.id)
+        }
+      }catch(err:any){
+        if (cancelled) return
+        console.error('Failed to load conversations:', err)
+        setConversationsError(err?.message || 'Failed to load conversations')
+        setConversations([])
+        setActiveId('')
+      }finally{
+        if (!cancelled) setConversationsLoaded(true)
+      }
+    })()
+    return()=>{cancelled=true}
+  },[createConversationOnServer])
   const [input,setInput]=useState('')
   useEffect(()=>{if(initialInput){setInput(initialInput);if(onInputConsumed)onInputConsumed()}},[initialInput])
   const [directSQL,setDirectSQL]=useState('SELECT *\nFROM orders\nLIMIT 10')
@@ -593,14 +1115,55 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
   const bottomRef=useRef<HTMLDivElement>(null)
 
   const activeConv=conversations.find(c=>c.id===activeId)||conversations[0]
+  const rotatedRecentQuestions = useMemo(()=>{
+    if(recentQuestions.length===0) return []
+    return stableShuffleQuestions(recentQuestions, starterShuffleSeed).slice(0, 4)
+  },[recentQuestions,starterShuffleSeed])
 
-  // Persist to sessionStorage
   useEffect(()=>{
-    try {
-      sessionStorage.setItem('qwezy_convs',JSON.stringify(conversations))
-      sessionStorage.setItem('qwezy_active_id',activeId)
-    } catch {}
-  },[conversations,activeId])
+    if(!conversationsLoaded || !activeId) return
+    const active = conversations.find(c=>c.id===activeId)
+    if(!active) return
+    if(skipNextSyncRef.current){
+      skipNextSyncRef.current = false
+      return
+    }
+    const timer = setTimeout(()=>{
+      syncConversationToServer(active).catch(()=>{})
+    }, 450)
+    return ()=>clearTimeout(timer)
+  },[conversations,activeId,conversationsLoaded,syncConversationToServer])
+
+  const deleteConversation=async(id:string)=>{
+    const remaining=conversations.filter(c=>c.id!==id)
+    setConversations(remaining)
+    try{
+      await fetch(`/api/conversations?id=${id}`, { method:'DELETE' })
+    }catch{}
+    if(remaining.length===0){
+      try{
+        const fresh = await createConversationOnServer()
+        skipNextSyncRef.current = true
+        setConversations([fresh])
+        setActiveId(fresh.id)
+      }catch{
+        console.error('Failed to create replacement conversation')
+        setConversations([])
+        setActiveId('')
+      }
+    } else if(activeId===id) {
+      setActiveId(remaining[0].id)
+    }
+  }
+
+  const renameConversation=async(id:string)=>{
+    const conv = conversations.find(c=>c.id===id)
+    if(!conv) return
+    const next = window.prompt('Rename conversation', conv.title)
+    const trimmed = (next || '').trim()
+    if(!trimmed || trimmed === conv.title) return
+    setConversations(prev=>prev.map(c=>c.id===id?{...c,title:trimmed,updatedAt:new Date()}:c))
+  }
 
   const startDrag=(e:React.MouseEvent)=>{
     dragging.current=true;dragY.current=e.clientY;dragH.current=sqlHeight
@@ -615,17 +1178,27 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
     setLoading(false)
   }
 
-  const newConversation=()=>{
-    const id=`c${Date.now()}`
-    const c:Conversation={id,title:'New conversation',messages:[],createdAt:new Date(),updatedAt:new Date()}
-    setConversations(prev=>[c,...prev].slice(0,10))
-    setActiveId(id)
-    setInput('')
+  const newConversation=async()=>{
+    try{
+      const c = await createConversationOnServer()
+      skipNextSyncRef.current = true
+      setConversations(prev=>[c,...prev].slice(0,15))
+      setActiveId(c.id)
+      setInput('')
+    }catch{
+      console.error('Failed to create conversation')
+      return
+    }
   }
 
   const sendMessage=async(text?:string,customSQL?:string)=>{
     const q=customSQL||(queryMode==='sql'?directSQL:text||input)
     if(!q?.trim()) return
+    if(!isDemo&&!dbConnected){
+      const noDbMsg:ConvMessage={id:`m${Date.now()}`,role:'assistant',content:'Connect your database first to start querying your data.',timestamp:new Date()}
+      setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,{id:`m${Date.now()}u`,role:'user',content:q,timestamp:new Date()},noDbMsg],updatedAt:new Date()}:c))
+      return
+    }
     setLoading(true);setStatusStep(0);setInput('')
 
     const ctrl=new AbortController()
@@ -633,14 +1206,14 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
 
     const userMsg:ConvMessage={id:`m${Date.now()}`,role:'user',content:queryMode==='sql'?`SQL: ${q.split('\n')[0]}…`:q,timestamp:new Date()}
     setConversations(prev=>prev.map(c=>c.id===activeId?{...c,
-      title:c.messages.length===0?(q.slice(0,40)+(q.length>40?'…':'')):c.title,
+      title:(c.title==='New conversation' && c.messages.length===0)?(q.slice(0,40)+(q.length>40?'…':'')):c.title,
       messages:[...c.messages,userMsg],updatedAt:new Date()
     }:c).slice(0,10))
 
     let step=0;const st=setInterval(()=>{step++;setStatusStep(step);if(step>=STEPS.length-1)clearInterval(st)},500)
 
     try{
-      const conv=conversations.find(c=>c.id===activeId)
+        const conv=conversations.find(c=>c.id===activeId)
       const prevMsgs=conv?.messages||[]
       const convCtx=prevMsgs.length>0
         ?`Previous messages:\n${prevMsgs.slice(-4).map(m=>`${m.role}: ${m.content}${m.sql?`\nSQL: ${m.sql}`:''}`).join('\n')}`
@@ -669,6 +1242,7 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
             assumptions:rewriteData.assumptions,timestamp:new Date(),rewritten:true
           }
           setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,assistantMsg],updatedAt:new Date()}:c))
+          refreshUsageMetrics()
           return
         }
       }
@@ -682,6 +1256,7 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
       if(data.answer){
         const textMsg:ConvMessage={id:`m${Date.now()}a`,role:'assistant',content:data.answer,confidence:data.confidence,assumptions:data.assumptions,timestamp:new Date()}
         setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,textMsg],updatedAt:new Date()}:c))
+        refreshUsageMetrics()
         return
       }
 
@@ -694,6 +1269,8 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
         timestamp:new Date()
       }
       setConversations(prev=>prev.map(c=>c.id===activeId?{...c,messages:[...c.messages,assistantMsg],updatedAt:new Date()}:c))
+      refreshUsageMetrics()
+      if(!isDemo) fetch('/api/query-history').then(r=>r.ok?r.json():null).then(d=>{ if(d?.questions?.length>0){ const qs=d.questions.map((q:string)=>cleanLearnedQuestion(q)).filter((q:string)=>q && !isWeakLearnedQuestion(q)); setRecentQuestions(qs); setRecentQuestionOffset(prev=>qs.length?prev%qs.length:0) } }).catch(()=>{})
     }catch(e:any){
       clearInterval(st)
       if(e.name!=='AbortError'){
@@ -703,153 +1280,160 @@ function QwezyTab({onAsk,initialInput='',onInputConsumed}:{onAsk:(q:string,conv?
     }finally{setLoading(false);abortRef.current=null}
   }
 
-  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:'smooth'})},[activeConv.messages.length])
+  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:'smooth'})},[activeConv?.messages.length])
   const addMemory=(note:string)=>{if(!note.trim())return;setMemoryNotes(prev=>[...prev,note.trim()]);setMemInput('')}
 
   return(
-    <div style={{flex:1,display:'flex',overflow:'hidden'}}>
-      {/* Conversation sidebar */}
-      <div style={{width:232,background:'#fff',borderRight:`1px solid ${C.cardBorder}`,display:'flex',flexDirection:'column',flexShrink:0}}>
-        <div style={{padding:'12px 14px',borderBottom:`1px solid ${C.cardBorder}`}}>
-          <button onClick={newConversation} style={{width:'100%',background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'8px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>+ New conversation</button>
+    <div style={{flex:1,display:'flex',overflow:'hidden',position:'relative',background:C.bg}}>
+      <div style={{width:252,background:'#F8FBF9',borderRight:`1px solid ${C.cardBorder}`,display:'flex',flexDirection:'column',flexShrink:0}}>
+        <div style={{padding:'14px',borderBottom:`1px solid ${C.cardBorder}`}}>
+          <button onClick={newConversation} style={{width:'100%',background:C.accent,color:'#fff',border:'none',borderRadius:14,padding:'12px',fontSize:13.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>+ New conversation</button>
         </div>
-        <div style={{flex:1,overflowY:'auto'}}>
+        <div style={{flex:1,overflowY:'auto',padding:'10px 10px 14px'}}>
+          {!!conversationsError&&(
+            <div style={{margin:'0 4px 10px',padding:'10px 12px',borderRadius:12,background:'#FEF2F2',border:'1px solid #FECACA',color:C.danger,fontSize:11.5,lineHeight:1.45}}>
+              {conversationsError}
+            </div>
+          )}
           {conversations.map(c=>(
-            <div key={c.id} onClick={()=>setActiveId(c.id)}
-              style={{padding:'9px 14px',cursor:'pointer',borderBottom:`1px solid ${C.cardBorder}`,background:c.id===activeId?C.accentBg:'transparent'}}
-              onMouseOver={e=>{if(c.id!==activeId)e.currentTarget.style.background='#F8FAFD'}} onMouseOut={e=>{if(c.id!==activeId)e.currentTarget.style.background='transparent'}}>
-              <div style={{fontSize:12.5,fontWeight:c.id===activeId?600:400,color:c.id===activeId?C.accent:C.text,marginBottom:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.title}</div>
-              <div style={{fontSize:10.5,color:C.textLight}}>{c.messages.length} msg · {c.updatedAt.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}</div>
+            <div key={c.id} onClick={()=>setActiveId(c.id)} onContextMenu={e=>{e.preventDefault();setSidebarMenu({x:e.clientX,y:e.clientY,id:c.id})}}
+              style={{padding:'12px 14px',cursor:'pointer',border:`1px solid ${c.id===activeId?C.greenBorder:C.cardBorder}`,background:c.id===activeId?C.greenBg:'#fff',borderRadius:16,display:'flex',alignItems:'center',gap:8,marginBottom:8,boxShadow:c.id===activeId?'0 10px 24px rgba(10,35,28,0.05)':'none'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12.8,fontWeight:700,color:c.id===activeId?C.accentDark:C.text,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.title}</div>
+                <div style={{fontSize:11,color:C.textLight}}>{c.messages.length} messages · {c.updatedAt.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}</div>
+              </div>
             </div>
           ))}
         </div>
-        {memoryNotes.length>0&&(
-          <div style={{padding:'9px 14px',borderTop:`1px solid ${C.cardBorder}`,background:'#FFFBEB'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-              <span style={{fontSize:10,fontWeight:600,color:'#92400E',textTransform:'uppercase',letterSpacing:'0.05em'}}>Session memory ({memoryNotes.length})</span>
-              <button onClick={()=>setShowMem(s=>!s)} style={{fontSize:10,color:'#D97706',background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif'}}>{showMem?'hide':'show'}</button>
+        {sidebarMenu&&(
+          <>
+            <div onClick={()=>setSidebarMenu(null)} style={{position:'fixed',inset:0,zIndex:299}} />
+            <div style={{position:'fixed',left:sidebarMenu.x,top:sidebarMenu.y,background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:12,boxShadow:'0 10px 28px rgba(0,0,0,0.12)',zIndex:300,minWidth:160,overflow:'hidden'}}>
+              <button onClick={()=>{const id=sidebarMenu.id; setSidebarMenu(null); renameConversation(id)}} style={{display:'block',width:'100%',textAlign:'left',padding:'10px 12px',background:'none',border:'none',fontSize:12.5,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Rename</button>
+              <button onClick={()=>{const id=sidebarMenu.id; setSidebarMenu(null); deleteConversation(id)}} style={{display:'block',width:'100%',textAlign:'left',padding:'10px 12px',background:'none',border:'none',fontSize:12.5,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Delete</button>
             </div>
-            {showMem&&memoryNotes.map((n,i)=><div key={i} style={{fontSize:11,color:'#92400E',marginBottom:2,paddingLeft:6,borderLeft:'2px solid #FDE68A',lineHeight:1.4}}>{n}</div>)}
-          </div>
+          </>
         )}
       </div>
 
-      {/* Main chat area */}
-      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-        <div style={{padding:'9px 20px',borderBottom:`1px solid ${C.cardBorder}`,background:'#fff',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',padding:'18px 22px 18px',gap:14}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'2px 2px 0',flexShrink:0}}>
           <div>
-            <div style={{fontSize:14,fontWeight:600,color:C.text}}>{activeConv.title}</div>
-            <div style={{fontSize:11.5,color:C.textLight}}>{activeConv.messages.length} messages</div>
+            <div style={{fontSize:28,fontWeight:800,color:C.navBg,letterSpacing:'-0.04em'}}>{activeConv?.title||'New conversation'}</div>
+            <div style={{fontSize:12.5,color:C.textMuted,marginTop:4}}>{activeConv?.messages.length||0} messages</div>
           </div>
         </div>
 
-        {/* Messages */}
-        <div style={{flex:1,overflowY:'auto',padding:'16px 20px',display:'flex',flexDirection:'column',gap:14}}>
-          {activeConv.messages.length===0&&!loading&&(
-            <div style={{textAlign:'center',paddingTop:40}}>
-              <div style={{fontSize:28,fontWeight:700,color:C.text,letterSpacing:'-0.5px',marginBottom:6}}>Ask your data</div>
-              <div style={{fontSize:14,color:C.textMuted,marginBottom:28}}>Type a question in plain English, or switch to SQL mode below</div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:7,justifyContent:'center',maxWidth:560,margin:'0 auto'}}>
-                {['Top 10 customers by total revenue','Monthly revenue for 2025','Products below reorder level','Sales by employee this year'].map(s=>(
-                  <button key={s} onClick={()=>{setInput(s);setQueryMode('nl')}}
-                    style={{background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'8px 14px',fontSize:13,color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif'}}
-                    onMouseOver={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.text}}
-                    onMouseOut={e=>{e.currentTarget.style.borderColor=C.cardBorder;e.currentTarget.style.color=C.textMuted}}>
-                    {s}
-                  </button>
-                ))}
+        <BrowserShell style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
+          <div style={{flex:1,overflowY:'auto',padding:'22px 22px 12px',display:'flex',flexDirection:'column',gap:16}}>
+            {(!activeConv || activeConv.messages.length===0)&&!loading&&(
+              <div style={{textAlign:'center',padding:'34px 10px 12px'}}>
+                <div style={{fontSize:34,fontWeight:800,color:C.navBg,letterSpacing:'-0.05em',marginBottom:8}}>Ask your data</div>
+                <div style={{fontSize:15,color:C.textMuted,marginBottom:26,lineHeight:1.7}}>Ask in plain English and get a real answer with SQL, results, and next steps in one place.</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:10,justifyContent:'center',maxWidth:720,margin:'0 auto'}}>
+                  {(()=>{
+                    const questions = buildProfessionalStarterQuestions(liveSchema, rotatedRecentQuestions, isDemo)
+                    return questions.map((s:string)=>(
+                      <button key={s} onClick={()=>{setQueryMode('nl');sendMessage(s)}}
+                        style={{background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:999,padding:'10px 16px',fontSize:13.5,color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>
+                        {s}
+                      </button>
+                    ))
+                  })()}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {activeConv.messages.map((msg)=>(
-            <div key={msg.id} style={{display:'flex',flexDirection:'column',alignItems:msg.role==='user'?'flex-end':'flex-start',gap:4,maxWidth:'100%'}}>
-              {msg.role==='user'
-                ?<div style={{background:C.accent,color:'#fff',borderRadius:'12px 12px 3px 12px',padding:'9px 14px',fontSize:13.5,maxWidth:'60%',lineHeight:1.5,fontFamily:'Inter,sans-serif'}}>{msg.content}</div>
-                :<div style={{width:'100%'}}>
-                  <div style={{fontSize:11,color:C.textLight,marginBottom:5}}>Qwezy · {msg.timestamp.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}</div>
-                  {msg.rewritten&&<div style={{fontSize:11.5,color:'#D97706',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:'4px 10px',marginBottom:6,display:'inline-block'}}>Your SQL had an error — Qwezy rewrote it to fix it</div>}
-                  {msg.sql&&(
-                    <div style={{marginBottom:8}}>
-                      <SQLEditor value={msg.sql} onChange={()=>{}} onRun={sql=>sendMessage(undefined,sql)} height={Math.min(sqlHeight,msg.sql.split('\n').length*21+28)}/>
-                      <div onMouseDown={startDrag} style={{height:8,cursor:'ns-resize',display:'flex',alignItems:'center',justifyContent:'center',margin:'2px 0'}}>
-                        <div style={{width:32,height:3,borderRadius:2,background:C.cardBorder}}/>
+            {(activeConv?.messages||[]).map((msg)=>(
+              <div key={msg.id} style={{display:'flex',flexDirection:'column',alignItems:msg.role==='user'?'flex-end':'flex-start',gap:6,maxWidth:'100%'}}>
+                {msg.role==='user'
+                  ?<div style={{background:C.accent,color:'#fff',borderRadius:'16px 16px 4px 16px',padding:'11px 16px',fontSize:14,maxWidth:'58%',lineHeight:1.55,fontFamily:'Inter,sans-serif',boxShadow:'0 10px 22px rgba(5,150,105,0.20)'}}>{msg.content}</div>
+                  :<div style={{width:'100%'}}>
+                    <div style={{fontSize:11.5,color:C.textLight,marginBottom:6}}>Qwezy · {msg.timestamp.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}</div>
+                    {msg.rewritten&&<div style={{fontSize:11.5,color:'#D97706',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:10,padding:'6px 10px',marginBottom:8,display:'inline-block'}}>Your SQL had an error. Qwezy rewrote it to fix it.</div>}
+                    {msg.sql&&(
+                      <div style={{marginBottom:10}}>
+                        <SQLEditor value={msg.sql} onChange={()=>{}} onRun={sql=>sendMessage(undefined,sql)} height={Math.min(sqlHeight,msg.sql.split('\n').length*21+28)}/>
+                        <div onMouseDown={startDrag} style={{height:10,cursor:'ns-resize',display:'flex',alignItems:'center',justifyContent:'center',margin:'5px 0 0'}}>
+                          <div style={{width:42,height:4,borderRadius:999,background:C.cardBorder}}/>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  {msg.confidence&&msg.confidence!=='high'&&(msg.uncertainAbout||msg.assumptions?.length)&&(
-                    <div style={{marginBottom:8}}>
-                      <ConfidenceNote confidence={msg.confidence} uncertainAbout={msg.uncertainAbout} assumptions={msg.assumptions} suggestedClarification={msg.suggestedClarification}
-                        onYes={()=>addMemory('confirmed: '+(msg.suggestedClarification||msg.uncertainAbout||'prior assumption'))}
-                        onNo={()=>addMemory('incorrect: '+(msg.uncertainAbout||'prior assumption'))}/>
-                    </div>
-                  )}
-                  {msg.rows&&msg.rows.length>0&&msg.fields&&(
-                    <div>
-                      <div style={{fontSize:11.5,color:C.textLight,marginBottom:5}}>{msg.rows.length} rows · {msg.duration}ms{msg.confidence==='high'&&<span style={{marginLeft:6,color:C.success,fontWeight:600}}>high confidence</span>}</div>
-                      <ResultsTable rows={msg.rows} fields={msg.fields}/>
-                      <FollowUpSuggestions rows={msg.rows} fields={msg.fields} onAsk={q=>{setInput(q);setQueryMode('nl')}}/>
-                    </div>
-                  )}
-                  {msg.rows&&msg.rows.length===0&&<div style={{fontSize:13,color:C.textLight,padding:'8px 0'}}>Query ran successfully — no rows returned</div>}
-                  {!msg.sql&&!msg.rows&&<div style={{fontSize:13.5,color:msg.content.includes('failed')||msg.content.includes('error')?C.danger:C.textMuted,padding:'4px 0'}}>{msg.content}</div>}
-                </div>}
-            </div>
-          ))}
+                    )}
+                    {msg.confidence&&msg.confidence!=='high'&&(msg.uncertainAbout||msg.assumptions?.length)&&(
+                      <div style={{marginBottom:8}}>
+                        <ConfidenceNote confidence={msg.confidence} uncertainAbout={msg.uncertainAbout} assumptions={msg.assumptions} suggestedClarification={msg.suggestedClarification}
+                          onYes={()=>addMemory('confirmed: '+(msg.suggestedClarification||msg.uncertainAbout||'prior assumption'))}
+                          onNo={()=>addMemory('incorrect: '+(msg.uncertainAbout||'prior assumption'))}/>
+                      </div>
+                    )}
+                    {msg.rows&&msg.rows.length>0&&msg.fields&&(
+                      <div className="landingCard" style={{padding:16}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,marginBottom:10}}>
+                          <div style={{fontSize:12.5,color:C.textLight}}>{msg.rows.length} rows · {msg.duration}ms{msg.confidence==='high'&&<span style={{marginLeft:6,color:C.success,fontWeight:700}}>high confidence</span>}</div>
+                        </div>
+                        <ResultsTable rows={msg.rows} fields={msg.fields}/>
+                        <FollowUpSuggestions rows={msg.rows} fields={msg.fields} onAsk={q=>{setQueryMode('nl');sendMessage(q)}}/>
+                      </div>
+                    )}
+                    {msg.rows&&msg.rows.length===0&&<div style={{fontSize:13.5,color:C.textLight,padding:'8px 0'}}>Query ran successfully. No rows returned.</div>}
+                    {!msg.sql&&!msg.rows&&<div style={{fontSize:14,color:msg.content.includes('failed')||msg.content.includes('error')?C.danger:C.textMuted,padding:'6px 0',lineHeight:1.6}}>{msg.content}</div>}
+                  </div>}
+              </div>
+            ))}
 
-          {loading&&(
-            <div style={{display:'flex',flexDirection:'column',gap:6}}>
-              <div style={{fontSize:11,color:C.textLight}}>Qwezy</div>
-              <div style={{background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:'3px 12px 12px 12px',padding:'10px 14px',maxWidth:320}}>
-                {STEPS.map((s,i)=>(
-                  <div key={s} style={{display:'flex',alignItems:'center',gap:7,marginBottom:i<STEPS.length-1?6:0,opacity:i<=statusStep?1:.2}}>
-                    {i<statusStep?<div style={{width:10,height:10,borderRadius:'50%',background:C.success,flexShrink:0}}/>
-                      :i===statusStep?<div style={{width:10,height:10,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',flexShrink:0,animation:'spin .8s linear infinite'}}/>
-                      :<div style={{width:10,height:10,borderRadius:'50%',border:`1.5px solid ${C.cardBorder}`,flexShrink:0}}/>}
-                    <span style={{fontSize:12.5,color:i===statusStep?C.text:C.textLight}}>{s}</span>
-                  </div>
-                ))}
+            {loading&&(
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{fontSize:11.5,color:C.textLight}}>Qwezy</div>
+                <div className="landingSoft" style={{padding:'14px 16px',maxWidth:360}}>
+                  {STEPS.map((s,i)=>(
+                    <div key={s} style={{display:'flex',alignItems:'center',gap:8,marginBottom:i<STEPS.length-1?8:0,opacity:i<=statusStep?1:.25}}>
+                      {i<statusStep?<div style={{width:11,height:11,borderRadius:'50%',background:C.success,flexShrink:0}}/>
+                        :i===statusStep?<div style={{width:11,height:11,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',flexShrink:0,animation:'spin .8s linear infinite'}}/>
+                        :<div style={{width:11,height:11,borderRadius:'50%',border:`1.5px solid ${C.cardBorder}`,flexShrink:0}}/>}
+                      <span style={{fontSize:12.5,color:i===statusStep?C.text:C.textLight}}>{s}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef}/>
+          </div>
+
+          <div style={{padding:'16px 20px 18px',borderTop:`1px solid ${C.cardBorder}`,background:'#FBFDFC',flexShrink:0}}>
+            {queryMode==='sql'&&(
+              <div style={{marginBottom:10}}>
+                <SQLEditor value={directSQL} onChange={setDirectSQL} onRun={sql=>sendMessage(undefined,sql)} height={sqlHeight}/>
+                <div onMouseDown={startDrag} style={{height:10,cursor:'ns-resize',display:'flex',alignItems:'center',justifyContent:'center',margin:'5px 0 0'}}>
+                  <div style={{width:42,height:4,borderRadius:999,background:C.cardBorder}}/>
+                </div>
+                <div style={{fontSize:11.5,color:C.textLight,marginTop:6}}>Write your own SQL. If it has errors, Qwezy will automatically rewrite and fix it for you.</div>
+              </div>
+            )}
+            <div style={{display:'flex',gap:10,alignItems:'flex-end'}}>
+              <div style={{flex:1,background:'#FFFFFF',borderRadius:16,border:`1px solid ${C.cardBorder}`,overflow:'hidden',boxShadow:'0 6px 18px rgba(10,35,28,0.03)'}}>
+                <textarea value={input} onChange={e=>setInput(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&queryMode==='nl'){e.preventDefault();sendMessage()}}}
+                  placeholder={queryMode==='sql'?'Describe what to query. Qwezy will help complete or fix the SQL above…':'Ask a question… (Enter to send, Shift+Enter for new line)'}
+                  style={{width:'100%',padding:'13px 14px',fontSize:14,color:C.text,background:'transparent',border:'none',resize:'none',minHeight:52,maxHeight:120,fontFamily:queryMode==='sql'?"'JetBrains Mono', monospace":'Inter,sans-serif',lineHeight:1.55}}/>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:6,flexShrink:0}}>
+                <button onClick={()=>setQueryMode(m=>m==='nl'?'sql':'nl')}
+                  style={{background:queryMode==='sql'?C.accentBg:'#fff',color:queryMode==='sql'?C.accent:C.textMuted,border:`1px solid ${queryMode==='sql'?C.accent:C.cardBorder}`,borderRadius:12,padding:'8px 12px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>
+                  {queryMode==='sql'?'SQL mode':'SQL'}
+                </button>
+                {loading
+                  ?<button onClick={stopQuery} style={{background:'#FEF2F2',color:C.danger,border:`1px solid #FECACA`,borderRadius:14,padding:'10px 14px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Stop</button>
+                  :<button onClick={()=>queryMode==='sql'?sendMessage(undefined,directSQL+(input.trim()?'\n-- '+input:'')):sendMessage()} disabled={!input.trim()&&queryMode==='nl'}
+                    style={{background:(!input.trim()&&queryMode==='nl')?'#DCE5DE':C.accent,color:(!input.trim()&&queryMode==='nl')?C.textLight:'#fff',border:'none',borderRadius:14,padding:'11px 18px',fontSize:13.5,fontWeight:700,cursor:(!input.trim()&&queryMode==='nl')?'default':'pointer',fontFamily:'Inter,sans-serif'}}>
+                    {queryMode==='sql'?'Run':'Send'}
+                  </button>}
               </div>
             </div>
-          )}
-          <div ref={bottomRef}/>
-        </div>
-
-        {/* Input area */}
-        <div style={{padding:'12px 20px',borderTop:`1px solid ${C.cardBorder}`,background:'#fff',flexShrink:0}}>
-          {queryMode==='sql'&&(
-            <div style={{marginBottom:8}}>
-              <SQLEditor value={directSQL} onChange={setDirectSQL} onRun={sql=>sendMessage(undefined,sql)} height={sqlHeight}/>
-              <div onMouseDown={startDrag} style={{height:8,cursor:'ns-resize',display:'flex',alignItems:'center',justifyContent:'center',margin:'3px 0'}}>
-                <div style={{width:32,height:3,borderRadius:2,background:C.cardBorder}}/>
-              </div>
-              <div style={{fontSize:11,color:C.textLight,marginBottom:6}}>Write your own SQL — if it has errors, Qwezy will automatically rewrite and fix it for you</div>
-            </div>
-          )}
-          <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
-            <div style={{flex:1,background:'#F8FAFD',borderRadius:9,border:`1px solid ${C.cardBorder}`,overflow:'hidden'}}>
-              <textarea value={input} onChange={e=>setInput(e.target.value)}
-                onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&queryMode==='nl'){e.preventDefault();sendMessage()}}}
-                placeholder={queryMode==='sql'?'Describe what to query — Qwezy will help complete or fix the SQL above…':'Ask a question… (Enter to send, Shift+Enter for new line)'}
-                style={{width:'100%',padding:'10px 13px',fontSize:13.5,color:C.text,background:'transparent',border:'none',resize:'none',minHeight:44,maxHeight:120,fontFamily:queryMode==='sql'?"'JetBrains Mono', monospace":'Inter,sans-serif',lineHeight:1.5}}/>
-            </div>
-            <div style={{display:'flex',flexDirection:'column',gap:5,flexShrink:0}}>
-              <button onClick={()=>setQueryMode(m=>m==='nl'?'sql':'nl')}
-                style={{background:queryMode==='sql'?C.accentBg:'#F0F4F8',color:queryMode==='sql'?C.accent:C.textMuted,border:`1px solid ${queryMode==='sql'?C.accent:C.cardBorder}`,borderRadius:6,padding:'5px 10px',fontSize:11.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>
-                {queryMode==='sql'?'SQL mode':'SQL'}
-              </button>
-              {loading
-                ?<button onClick={stopQuery} style={{background:'#FEF2F2',color:C.danger,border:`1px solid #FECACA`,borderRadius:8,padding:'8px 12px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Stop</button>
-                :<button onClick={()=>queryMode==='sql'?sendMessage(undefined,directSQL+(input.trim()?'\n-- '+input:'')):sendMessage()} disabled={!input.trim()&&queryMode==='nl'}
-                  style={{background:(!input.trim()&&queryMode==='nl')?'#E3EAF2':C.accent,color:(!input.trim()&&queryMode==='nl')?C.textLight:'#fff',border:'none',borderRadius:8,padding:'8px 16px',fontSize:13.5,fontWeight:600,cursor:(!input.trim()&&queryMode==='nl')?'default':'pointer',fontFamily:'Inter,sans-serif'}}>
-                  {queryMode==='sql'?'Run':'Send'}
-                </button>}
+            <div style={{fontSize:11,color:C.textLight,marginTop:6}}>
+              {queryMode==='nl'?'Enter to send · Shift+Enter for new line':'SQL mode · Ctrl+Enter to run · errors auto-fixed by Qwezy AI'}
             </div>
           </div>
-          <div style={{fontSize:10.5,color:C.textLight,marginTop:5}}>
-            {queryMode==='nl'?'Enter to send · Shift+Enter for new line':'SQL mode · Ctrl+Enter to run · errors auto-fixed by Qwezy AI'}
-          </div>
-        </div>
+        </BrowserShell>
       </div>
     </div>
   )
@@ -871,9 +1455,13 @@ function buildSQL(
 ): string {
   if (selCols.length === 0) return ''
   
-  // Determine tables needed
+  // Determine tables needed — use schema-qualified names
   const tables = Array.from(new Set(selCols.map(c=>c.table)))
   const primaryTable = tables[0]
+  const fqn = (tbl:string) => {
+    const s = selCols.find(c=>c.table===tbl)?.tableSchema
+    return s&&s!=='public'?`${s}.${tbl}`:tbl
+  }
   
   // Find joins
   const joins: string[] = []
@@ -883,21 +1471,21 @@ function buildSQL(
     // Check if primary joins to this table
     const j1 = primaryDef?.joins.find(j=>j.to===tbl)
     if(j1) {
-      joins.push(`JOIN ${tbl} ON ${primaryTable}.${j1.on} = ${tbl}.${j1.on}`)
+      joins.push(`JOIN ${fqn(tbl)} ON ${primaryTable}.${j1.on} = ${tbl}.${j1.on}`)
       return
     }
     // Check if this table joins to primary
     const j2 = tblDef?.joins.find(j=>j.to===primaryTable)
     if(j2) {
-      joins.push(`JOIN ${tbl} ON ${tbl}.${j2.on} = ${primaryTable}.${j2.on}`)
+      joins.push(`JOIN ${fqn(tbl)} ON ${tbl}.${j2.on} = ${primaryTable}.${j2.on}`)
       return
     }
     // Try to find path through another table
-    joins.push(`JOIN ${tbl} ON true -- check join condition`)
+    joins.push(`JOIN ${fqn(tbl)} ON true -- check join condition`)
   })
   
   const selectCols = selCols.map(c => `${c.table}.${c.n}`).join(',\n  ')
-  const fromClause = primaryTable
+  const fromClause = fqn(primaryTable)
   const joinClause = joins.length > 0 ? '\n' + joins.join('\n') : ''
   
   const activeFilters = filters.filter(f=>f.col&&f.val!==''&&!['IS NULL','IS NOT NULL'].includes(f.op))
@@ -915,7 +1503,7 @@ function buildSQL(
   return `SELECT\n  ${selectCols}\nFROM ${fromClause}${joinClause}${whereClause}${groupByClause}${orderByClause}${limitClause}`
 }
 
-function BuilderTab() {
+function BuilderTab({tables=TABLES,isDemo=true}:{tables?:any[],isDemo?:boolean}) {
   const [colSearch,setColSearch]=useState('')
   const [selCols,setSelCols]=useState<BuilderCol[]>([])
   const [groupBys,setGroupBys]=useState<BuilderCol[]>([])
@@ -934,10 +1522,11 @@ function BuilderTab() {
   const dragResults=useRef(false)
   const abortRef=useRef<AbortController|null>(null)
 
+  const allCols=useMemo(()=>(isDemo?TABLES:tables).flatMap((t:any)=>t.columns.map((c:any)=>({...c,table:t.name,tableSchema:t.schema||'public',team:t.team||''}))), [tables,isDemo])
   const builderCols=useMemo(()=>{
     const q=colSearch.toLowerCase()
-    return ALL_COLS.filter(c=>!q||c.n.includes(q)||c.table.includes(q))
-  },[colSearch])
+    return allCols.filter((c:any)=>!q||c.n.includes(q)||c.table.includes(q))
+  },[colSearch,allCols])
 
   const generatedSQL = useMemo(()=>buildSQL(selCols,filters,groupBys,orderBys,limit),[selCols,filters,groupBys,orderBys,limit])
 
@@ -1012,6 +1601,14 @@ function BuilderTab() {
 
   const colColStr=(col:BuilderCol)=>`${col.table}.${col.n}`
 
+  if(!isDemo&&tables.length===0) return(
+    <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',textAlign:'center',padding:40,fontFamily:"'Inter',sans-serif",background:C.bg}}>
+      <div style={{fontSize:44,marginBottom:16}}>🔌</div>
+      <div style={{fontSize:17,fontWeight:700,color:C.text,marginBottom:8}}>No database connected</div>
+      <div style={{fontSize:13.5,color:C.textMuted,lineHeight:1.7,maxWidth:380,marginBottom:24}}>Connect your database to start building queries with the visual query builder.</div>
+      <button onClick={()=>window.location.href='/connect'} style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Connect database →</button>
+    </div>
+  )
   return(
     <div style={{flex:1,display:'flex',overflow:'hidden',background:C.bg}}>
       {/* Column sidebar */}
@@ -1022,8 +1619,8 @@ function BuilderTab() {
             style={{width:'100%',padding:'4px 8px',borderRadius:5,border:`1px solid ${C.sidebarBorder}`,fontSize:12,color:C.text,background:C.bg,fontFamily:'Inter,sans-serif'}}/>
         </div>
         <div style={{flex:1,overflowY:'auto',padding:'5px 7px'}}>
-          {TABLES.map(tbl=>{
-            const tblCols=builderCols.filter(c=>c.table===tbl.name)
+          {(isDemo?TABLES:tables).map((tbl:any)=>{
+            const tblCols=builderCols.filter((c:any)=>c.table===tbl.name)
             if(tblCols.length===0) return null
             return(
               <div key={tbl.name} style={{marginBottom:8}}>
@@ -1054,7 +1651,7 @@ function BuilderTab() {
         {/* Panel resize handle */}
         <div onMouseDown={startPanelDrag} style={{position:'absolute',right:0,top:0,bottom:0,width:5,cursor:'ew-resize',zIndex:10}}
           onMouseOver={e=>e.currentTarget.style.background='rgba(5,150,105,0.2)'}
-          onMouseOut={e=>e.currentTarget.style.background='transparent'}/>
+          onMouseOut={e=>{e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='transparent'; e.currentTarget.style.boxShadow='none'}}/>
       </div>
 
       {/* Builder canvas */}
@@ -1269,9 +1866,13 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
 
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(15,25,35,0.65)',zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-      <div style={{background:'#fff',borderRadius:12,width:'100%',maxWidth:660,maxHeight:'92vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 64px rgba(0,0,0,0.25)',overflow:'hidden'}}>
+      <div className="browserShell" style={{width:'100%',maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+        <div className="browserBar">
+          <div className="browserDots"><span></span><span></span><span></span></div>
+          <div style={{margin:'0 auto',fontSize:11,color:C.textLight,fontWeight:700,letterSpacing:'0.06em'}}>REPORT EMAIL</div>
+        </div>
         {/* Header */}
-        <div style={{padding:'14px 20px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:10}}>
+        <div style={{padding:'16px 22px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:10,background:'#FBFDFC'}}>
           <div style={{flex:1}}>
             <div style={{fontWeight:700,fontSize:15,color:C.text}}>Email report</div>
             <div style={{fontSize:12,color:C.textLight,marginTop:1}}>{report.name}</div>
@@ -1358,8 +1959,8 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
           </div>
         ):(
           /* Email preview — professional branded template */
-          <div style={{flex:1,overflowY:'auto',padding:20,background:'#F4F6F9'}}>
-            <div style={{maxWidth:540,margin:'0 auto',background:'#fff',borderRadius:12,overflow:'hidden',boxShadow:'0 2px 12px rgba(0,0,0,0.08)'}}>
+          <div style={{flex:1,overflowY:'auto',padding:22,background:'#F4F8F5'}}>
+            <div className="browserShell" style={{maxWidth:640,margin:'0 auto'}}>
               {/* Email header */}
               <div style={{background:'#022c22',padding:'20px 28px',display:'flex',alignItems:'center',gap:10}}>
                 <div style={{width:32,height:32,background:'linear-gradient(135deg,#10B981,#059669)',borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'#fff',fontFamily:'monospace',fontWeight:700}}>{'{ }'}</div>
@@ -1423,8 +2024,8 @@ function EmailModal({report,rows,fields,onClose}:{report:any,rows:any[],fields:s
 }
 
 // ── Reports Tab ───────────────────────────────────────────────────────────────
-function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,result:ReportResult)=>void}) {
-  const [reports,setReports]=useState(INITIAL_REPORTS as any[])
+function ReportsTab({sharedResults,onResultSaved,isDemo}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,result:ReportResult)=>void,isDemo:boolean}) {
+  const [reports,setReports]=useState<any[]>(()=>isDemo?INITIAL_REPORTS as any[]:[])
   const [showNew,setShowNew]=useState(false)
   const [running,setRunning]=useState<string|null>(null)
   const [expanded,setExpanded]=useState<string|null>(null)
@@ -1435,6 +2036,13 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
   const existingGroups=useMemo(()=>Array.from(new Set(reports.map((r:any)=>r.group||'General'))) as string[],[reports])
 
   const isStale=(report:any)=>{const cached=sharedResults[report.id];if(!cached)return true;return(Date.now()-cached.ranAt)/1000/3600>report.refreshHours}
+
+  // Load reports from API on mount
+  useEffect(()=>{
+    if(!isDemo){
+      fetch('/api/reports').then(r=>r.ok?r.json():null).then(d=>{if(d?.reports) setReports(d.reports)}).catch(()=>{})
+    }
+  },[isDemo])
 
   useEffect(()=>{
     const h=()=>setMenuOpen(null)
@@ -1461,299 +2069,323 @@ function ReportsTab({sharedResults,onResultSaved}:{sharedResults:Record<string,R
     const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`${name}.csv`;a.click()
   }
 
-  const addReport=()=>{
+  const addReport=async()=>{
     if(!newReport.name||!newReport.sql) return
-    const id=`r${Date.now()}`
-    setReports((p:any[])=>[...p,{...newReport,id,owner:'Me',lastRun:'Never',rows:0}])
+    if(isDemo){
+      // Demo: local only
+      const id=`r${Date.now()}`
+      setReports((p:any[])=>[...p,{...newReport,id,owner:'Me',lastRun:'Never',rows:0}])
+    } else {
+      // Real company: save to DB
+      try{
+        const res=await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:newReport.name,description:newReport.description,sql:newReport.sql,
+            schedule:newReport.schedule,refreshHours:newReport.refreshHours,shared:newReport.shared,group:newReport.group})})
+        if(res.ok){
+          // Refetch from API to get the real saved record with ID
+          const refreshed=await fetch('/api/reports')
+          const d=await refreshed.json()
+          if(d?.reports) setReports(d.reports)
+        }
+      }catch{}
+    }
     setNewReport({name:'',description:'',sql:'',schedule:'weekly',refreshHours:168,shared:true,group:'Finance'})
     setShowNew(false)
   }
 
+  const deleteReport=async(id:string)=>{
+    setReports((p:any[])=>p.filter(r=>r.id!==id))
+    if(!isDemo){
+      try{await fetch('/api/reports',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})}catch{}
+    }
+  }
+
   return(
     <>
-    <div style={{flex:1,overflowY:'auto',padding:'16px 20px'}}>
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+    <div style={{flex:1,overflowY:'auto',padding:'22px 24px',background:C.bg}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
         <div>
-          <h2 style={{fontSize:17,fontWeight:700,color:C.text,marginBottom:2}}>Reports</h2>
-          <p style={{fontSize:12.5,color:C.textMuted}}>Saved queries with scheduled delivery</p>
+          <h2 style={{fontSize:30,fontWeight:800,color:C.navBg,letterSpacing:'-0.04em',marginBottom:4}}>Reports</h2>
+          <p style={{fontSize:14,color:C.textMuted,lineHeight:1.7}}>Saved queries with scheduled delivery and AI summaries that explain what the data means.</p>
         </div>
-        <button onClick={()=>setShowNew(s=>!s)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'8px 16px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>+ New report</button>
+        <button onClick={()=>setShowNew(s=>!s)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:14,padding:'12px 18px',fontSize:13.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>+ New report</button>
       </div>
 
       {showNew&&(
-        <div style={{background:'#fff',borderRadius:9,border:`1.5px solid ${C.accent}`,padding:16,marginBottom:16}}>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
-            {[['name','Name','Monthly Revenue…'],['description','Description','Optional description…'],['group','Group','Finance']].map(([k,l,p])=>(
-              <div key={k}>
-                <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:3}}>{l}</div>
-                <input value={(newReport as any)[k]} onChange={e=>setNewReport(p=>({...p,[k]:e.target.value}))} placeholder={p}
-                  style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+        <BrowserShell style={{marginBottom:18}}>
+          <div style={{padding:18}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+              {[['name','Name','Monthly Revenue…'],['description','Description','Optional description…'],['group','Group','Finance']].map(([k,l,p])=>(
+                <div key={k}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>{l}</div>
+                  <input value={(newReport as any)[k]} onChange={e=>setNewReport(p=>({...p,[k]:e.target.value}))} placeholder={p}
+                    style={{width:'100%',padding:'10px 12px',borderRadius:12,border:`1px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}/>
+                </div>
+              ))}
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Schedule</div>
+                <select value={newReport.schedule} onChange={e=>setNewReport(p=>({...p,schedule:e.target.value}))}
+                  style={{width:'100%',padding:'10px 12px',borderRadius:12,border:`1px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
+                  {['daily','weekly','monthly','manual'].map(s=><option key={s}>{s}</option>)}
+                </select>
               </div>
-            ))}
-            <div>
-              <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:3}}>Schedule</div>
-              <select value={newReport.schedule} onChange={e=>setNewReport(p=>({...p,schedule:e.target.value}))}
-                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff',cursor:'pointer'}}>
-                {['daily','weekly','monthly','manual'].map(s=><option key={s}>{s}</option>)}
-              </select>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>SQL Query</div>
+              <SQLEditor value={newReport.sql} onChange={v=>setNewReport(p=>({...p,sql:v}))} height={96}/>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={addReport} style={{background:C.accent,color:'#fff',border:'none',borderRadius:12,padding:'10px 16px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save report</button>
+              <button onClick={()=>setShowNew(false)} style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:12,padding:'10px 14px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
             </div>
           </div>
-          <div style={{marginBottom:10}}>
-            <div style={{fontSize:10.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:3}}>SQL Query</div>
-            <SQLEditor value={newReport.sql} onChange={v=>setNewReport(p=>({...p,sql:v}))} height={80}/>
-          </div>
-          <div style={{display:'flex',gap:7}}>
-            <button onClick={addReport} style={{background:C.accent,color:'#fff',border:'none',borderRadius:6,padding:'7px 16px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save report</button>
-            <button onClick={()=>setShowNew(false)} style={{background:'#F0F4F8',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:6,padding:'7px 12px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
-          </div>
-        </div>
+        </BrowserShell>
       )}
 
-      {existingGroups.map(groupName=>{
-        const groupReports=reports.filter((r:any)=>(r.group||'General')===groupName)
-        return(
-          <div key={groupName} style={{marginBottom:20}}>
-            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
-              <span style={{fontWeight:700,fontSize:13.5,color:C.text}}>{groupName}</span>
-              <div style={{flex:1,height:1,background:C.cardBorder}}/>
-              <span style={{fontSize:11.5,color:C.textLight}}>{groupReports.length} report{groupReports.length!==1?'s':''}</span>
-            </div>
-            <div style={{display:'flex',flexDirection:'column',gap:10}}>
-              {groupReports.map((report:any)=>{
-                const cached=sharedResults[report.id]
-                const stale=isStale(report)
-                const ageH=cached?Math.max(0,Math.round((Date.now()-cached.ranAt)/1000/3600)):null
-                return(
-                  <div key={report.id} style={{background:'#fff',borderRadius:9,border:`1px solid ${C.cardBorder}`}}>
-                    <div style={{padding:'12px 16px',display:'flex',alignItems:'flex-start',gap:10}}>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:4,flexWrap:'wrap'}}>
-                          <span style={{fontWeight:600,fontSize:14.5,color:C.text}}>{report.name}</span>
-                          <span style={{background:`${SCHED_COLOR[report.schedule]||'#94A3B8'}15`,color:SCHED_COLOR[report.schedule]||'#94A3B8',fontSize:10.5,fontWeight:600,padding:'2px 7px',borderRadius:4}}>{report.schedule}</span>
-                          {cached&&!stale&&<span style={{background:C.greenBg,color:C.success,fontSize:10.5,fontWeight:600,padding:'2px 7px',borderRadius:4}}>Fresh</span>}
-                          {cached&&stale&&<span style={{background:'#FEF3C7',color:'#D97706',fontSize:10.5,fontWeight:600,padding:'2px 7px',borderRadius:4}}>Stale</span>}
-                          {!cached&&<span style={{background:'#F8FAFD',color:C.textLight,fontSize:10.5,padding:'2px 7px',borderRadius:4}}>Not run</span>}
+      {!isDemo&&reports.length===0&&!showNew&&(
+        <BrowserShell>
+          <div style={{padding:'70px 24px',textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:C.navBg,marginBottom:8}}>No reports yet</div>
+            <div style={{fontSize:14,color:C.textMuted,marginBottom:18}}>Create a saved report with scheduled delivery and AI analysis.</div>
+            <button onClick={()=>setShowNew(true)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:14,padding:'12px 18px',fontSize:13.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Create your first report</button>
+          </div>
+        </BrowserShell>
+      )}
+
+      {existingGroups.map(group=>(
+        <div key={group} style={{marginBottom:20}}>
+          <div style={{fontSize:20,fontWeight:800,color:C.navBg,marginBottom:10}}>{group}</div>
+          <div style={{display:'grid',gap:16}}>
+            {reports.filter((r:any)=>(r.group||'General')===group).map((report:any)=>{
+              const cached=sharedResults[report.id]
+              const stale=isStale(report)
+              return (
+                <BrowserShell key={report.id}>
+                  <div style={{padding:'18px 18px 0'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:16,alignItems:'flex-start',marginBottom:14}}>
+                      <div style={{flex:1}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
+                          <span style={{fontSize:22,fontWeight:800,color:C.navBg,letterSpacing:'-0.03em'}}>{report.name}</span>
+                          <span className="landing-chip" style={{color:SCHED_COLOR[report.schedule]||C.textLight}}>{report.schedule}</span>
+                          {cached&&!stale&&<span className="landing-chip" style={{color:C.success,background:C.greenBg,borderColor:C.greenBorder}}>Fresh</span>}
+                          {cached&&stale&&<span className="landing-chip" style={{color:'#D97706',background:'#FFFBEB',borderColor:'#FDE68A'}}>Stale</span>}
                         </div>
-                        <p style={{fontSize:12.5,color:C.textMuted,marginBottom:5}}>{report.description}</p>
+                        <p style={{fontSize:14.5,color:C.textMuted,marginBottom:8,lineHeight:1.7,maxWidth:760}}>{report.description}</p>
                         <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
-                          <span style={{fontSize:11,color:C.textLight}}>Last run: <strong style={{color:C.text}}>{report.lastRun}</strong></span>
-                          {cached&&<span style={{fontSize:11,color:C.textLight}}>Cached: <strong style={{color:C.text}}>{ageH===0?'just now':`${ageH}h ago`}</strong></span>}
-                          <span style={{fontSize:11,color:SCHED_COLOR[report.schedule]||C.textLight,fontWeight:600}}>Next: {SCHEDULE_NEXT[report.schedule]||'—'}</span>
+                          <span style={{fontSize:12,color:C.textLight}}>Last run: <strong style={{color:C.text}}>{report.lastRun}</strong></span>
+                          {cached&&<span style={{fontSize:12,color:C.textLight}}>Cached: <strong style={{color:C.text}}>{Math.floor((Date.now()-cached.ranAt)/1000/3600)===0?'just now':`${Math.floor((Date.now()-cached.ranAt)/1000/3600)}h ago`}</strong></span>}
+                          <span style={{fontSize:12,color:SCHED_COLOR[report.schedule]||C.textLight,fontWeight:700}}>Next: {SCHEDULE_NEXT[report.schedule]||'—'}</span>
                         </div>
                       </div>
-                      <div style={{display:'flex',gap:6,flexShrink:0,alignItems:'center'}}>
+                      <div style={{display:'flex',gap:8,alignItems:'center',flexShrink:0}}>
                         <button onClick={()=>runReport(report,true)} disabled={running===report.id}
-                          style={{background:C.accent,color:'#fff',border:'none',borderRadius:6,padding:'6px 12px',fontSize:12.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',opacity:running===report.id?.6:1,whiteSpace:'nowrap'}}>
+                          style={{background:C.accent,color:'#fff',border:'none',borderRadius:12,padding:'10px 14px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',opacity:running===report.id?0.6:1,whiteSpace:'nowrap'}}>
                           {running===report.id?'Running…':stale||!cached?'Run':'Re-run'}
                         </button>
                         {cached&&(
                           <button onClick={()=>setExpanded(expanded===report.id?null:report.id)}
-                            style={{background:'#F0F4F8',color:C.text,border:`1px solid ${C.cardBorder}`,borderRadius:6,padding:'6px 11px',fontSize:12.5,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500}}>
+                            style={{background:'#fff',color:C.text,border:`1px solid ${C.cardBorder}`,borderRadius:12,padding:'10px 12px',fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>
                             {expanded===report.id?'Hide':'Results'}
                           </button>
                         )}
-                        {/* Ellipsis menu */}
                         <div style={{position:'relative'}}>
                           <button onClick={e=>{e.stopPropagation();setMenuOpen(menuOpen===report.id?null:report.id)}}
-                            style={{background:'#F0F4F8',border:`1px solid ${C.cardBorder}`,borderRadius:6,padding:'5px 10px',fontSize:17,cursor:'pointer',color:C.textMuted,lineHeight:1,fontWeight:700,letterSpacing:1}}>
+                            style={{background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:12,padding:'8px 12px',fontSize:17,cursor:'pointer',color:C.textMuted,lineHeight:1,fontWeight:700,letterSpacing:1}}>
                             ···
                           </button>
                           {menuOpen===report.id&&(
-                            <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 6px 20px rgba(0,0,0,0.12)',zIndex:100,minWidth:170,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
-                              <button onClick={async()=>{
-                                  setMenuOpen(null)
-                                  if(!sharedResults[report.id])await runReport(report,true)
-                                  const c=sharedResults[report.id]
-                                  if(c)setEmailModal({report,rows:c.rows,fields:c.fields})
-                                }}
-                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                                onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>
-                                ✉ Email results
-                              </button>
-                              <button onClick={async()=>{
-                                  setMenuOpen(null)
-                                  if(!sharedResults[report.id])await runReport(report,true)
-                                  const c=sharedResults[report.id]
-                                  if(c)exportCSV(c.rows,c.fields,report.name)
-                                }}
-                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                                onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>
-                                ↓ Export CSV
-                              </button>
+                            <div style={{position:'absolute',right:0,top:'calc(100% + 6px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:12,boxShadow:'0 12px 28px rgba(0,0,0,0.12)',zIndex:100,minWidth:170,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+                              <button onClick={async()=>{setMenuOpen(null); if(!sharedResults[report.id])await runReport(report,true); const c=sharedResults[report.id]; if(c)setEmailModal({report,rows:c.rows,fields:c.fields})}}
+                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>✉ Email results</button>
+                              <button onClick={async()=>{setMenuOpen(null); if(!sharedResults[report.id])await runReport(report,true); const c=sharedResults[report.id]; if(c)exportCSV(c.rows,c.fields,report.name)}}
+                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>↓ Export CSV</button>
                               <button onClick={()=>{setBiPanel(biPanel===report.id?null:report.id);setMenuOpen(null)}}
-                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                                onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>
-                                ⚡ BI Connect
-                              </button>
+                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>⚡ BI Connect</button>
                               <div style={{height:1,background:C.cardBorder,margin:'3px 0'}}/>
                               <button onClick={()=>{setReports((p:any[])=>p.filter(r=>r.id!==report.id));setMenuOpen(null)}}
-                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                                onMouseOver={e=>e.currentTarget.style.background='#FEF2F2'} onMouseOut={e=>e.currentTarget.style.background='none'}>
-                                🗑 Delete report
-                              </button>
+                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>🗑 Delete report</button>
                             </div>
                           )}
                         </div>
                       </div>
                     </div>
-                    {cached&&expanded===report.id&&(
-                      <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'12px 16px',background:C.bg}}>
-                        <div style={{fontSize:11.5,color:C.textLight,marginBottom:7}}>{stale?'Stale — ':'Fresh — '}cached at {cached.ts} · {cached.rows.length} rows</div>
-                        <ResultsTable rows={cached.rows} fields={cached.fields}/>
-                      </div>
-                    )}
-                    {biPanel===report.id&&(
-                      <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'12px 16px',background:'#F8FAFD'}}>
-                        <div style={{fontSize:12.5,fontWeight:600,color:C.text,marginBottom:10}}>BI Tool Connection</div>
-                        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                          {[{label:'PowerBI',desc:'Data → Get Data → Web → paste URL',url:`https://qwezy.io/api/export?report=${report.id}&format=json`},{label:'Tableau',desc:'Connect → Web Data Connector → paste URL',url:`https://qwezy.io/api/export?report=${report.id}&format=csv`},{label:'Google Sheets',desc:'=IMPORTDATA("url") in any cell',url:`https://qwezy.io/api/export?report=${report.id}&format=csv`}].map(({label,desc,url})=>(
-                            <div key={label} style={{background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'10px 12px'}}>
-                              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:3}}>
-                                <span style={{fontSize:12.5,fontWeight:600,color:C.text}}>{label}</span>
-                                <button onClick={()=>navigator.clipboard?.writeText(url)} style={{fontSize:11,padding:'2px 9px',borderRadius:4,border:`1px solid ${C.cardBorder}`,background:C.accentBg,color:C.accent,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:500}}>Copy URL</button>
-                              </div>
-                              <div style={{fontSize:11,color:C.textLight,marginBottom:4}}>{desc}</div>
-                              <div style={{fontFamily:"'JetBrains Mono'",fontSize:10,color:C.textMuted,background:'#F0F4F8',padding:'3px 7px',borderRadius:4,wordBreak:'break-all'}}>{url}</div>
-                            </div>
-                          ))}
-                          <div style={{fontSize:11.5,color:'#92400E',padding:'8px 10px',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6}}>Live BI connections available on Growth and Scale plans.</div>
-                        </div>
+
+                    {cached&&(
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
+                        <LandingKpi label="Rows" value={String(cached.rows.length)} highlight />
+                        <LandingKpi label="Latency" value={`${cached.rows.length?Math.max(180, cached.rows.length*12):240}ms`} />
+                        <LandingKpi label="Delivery" value={report.schedule==='manual'?'Manual':'Email'} />
                       </div>
                     )}
                   </div>
-                )
-              })}
-            </div>
+
+                  {cached&&expanded===report.id&&(
+                    <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'18px',background:'#FBFDFC'}}>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr',gap:14}}>
+                        <div className="landingSoft" style={{padding:16}}>
+                          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+                            <div style={{width:28,height:28,borderRadius:'50%',background:C.accent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800}}>✓</div>
+                            <div style={{fontSize:14,fontWeight:700,color:C.text}}>AI analysis</div>
+                          </div>
+                          <div style={{fontSize:18,lineHeight:1.7,color:C.text}}>
+                            <strong>{cached.rows.length > 0 ? `${cached.rows.length} rows returned.` : 'No rows returned.'}</strong> {cached.rows.length > 0 ? `Qwezy can email a concise summary that explains what changed and what needs attention.` : ''}
+                          </div>
+                        </div>
+                        <ResultsTable rows={cached.rows} fields={cached.fields}/>
+                      </div>
+                    </div>
+                  )}
+
+                  {biPanel===report.id&&(
+                    <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'16px 18px',background:'#FBFDFC'}}>
+                      <div style={{fontSize:13.5,fontWeight:700,color:C.text,marginBottom:10}}>BI Tool Connection</div>
+                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                        {[{label:'PowerBI',desc:'Data → Get Data → Web → paste URL',url:`https://qwezy.io/api/export?report=${report.id}&format=json`},{label:'Tableau',desc:'Connect → Web Data Connector → paste URL',url:`https://qwezy.io/api/export?report=${report.id}&format=csv`},{label:'Google Sheets',desc:'=IMPORTDATA("url") in any cell',url:`https://qwezy.io/api/export?report=${report.id}&format=csv`}].map(({label,desc,url})=>(
+                          <div key={label} className="landingSoft" style={{padding:'12px 14px'}}>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
+                              <span style={{fontSize:13,fontWeight:700,color:C.text}}>{label}</span>
+                              <button onClick={()=>navigator.clipboard?.writeText(url)} style={{fontSize:11,padding:'4px 10px',borderRadius:999,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.accent,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:700}}>Copy URL</button>
+                            </div>
+                            <div style={{fontSize:11.5,color:C.textLight,marginBottom:5}}>{desc}</div>
+                            <div style={{fontFamily:"'JetBrains Mono'",fontSize:10.5,color:C.textMuted,background:'#fff',padding:'6px 8px',borderRadius:8,wordBreak:'break-all',border:`1px solid ${C.cardBorder}`}}>{url}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </BrowserShell>
+              )
+            })}
           </div>
-        )
-      })}
+        </div>
+      ))}
     </div>
-        {emailModal&&<EmailModal report={emailModal.report} rows={emailModal.rows} fields={emailModal.fields} onClose={()=>setEmailModal(null)}/>}
-      </> 
-      )
+    {emailModal&&<EmailModal report={emailModal.report} rows={emailModal.rows} fields={emailModal.fields} onClose={()=>setEmailModal(null)}/>}
+    </> 
+  )
     }
 
 // ── Explorer Tab ──────────────────────────────────────────────────────────────
-function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void,onInfoPanel:(t:any,x:number,y:number)=>void}) {
+function ExplorerTab({onAsk,setDrawerTable,handleRightClick,onInfoPanel,displayTables=TABLES}:{onAsk:(q:string)=>void,setDrawerTable:(t:any)=>void,handleRightClick:(e:React.MouseEvent,t:any)=>void,onInfoPanel:(t:any,x:number,y:number)=>void,displayTables?:any[]}) {
   const [explorerView,setExplorerView]=useState<'tables'|'schema'>('tables')
   const [search,setSearch]=useState('')
-  const filtered=search?TABLES.filter(t=>t.name.includes(search.toLowerCase())||t.columns.some(c=>c.n.includes(search.toLowerCase()))):TABLES
+  const filtered=search?displayTables.filter((t:any)=>t.name.includes(search.toLowerCase())||t.columns.some((c:any)=>c.n.includes(search.toLowerCase()))):displayTables
   return(
-    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-      {/* Sub-tab bar */}
-      <div style={{background:'#fff',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',padding:'0 20px',flexShrink:0}}>
-        {[['tables','Tables'],['schema','Schema']].map(([v,l])=>(
-          <button key={v} onClick={()=>setExplorerView(v as any)}
-            style={{background:'none',border:'none',padding:'11px 14px',fontSize:13,fontWeight:explorerView===v?600:400,color:explorerView===v?C.accent:C.textMuted,cursor:'pointer',borderBottom:`2px solid ${explorerView===v?C.accent:'transparent'}`,fontFamily:'Inter,sans-serif'}}>
-            {l}
-          </button>
-        ))}
-      </div>
-      {explorerView==='schema'&&<div style={{flex:1,overflowY:'auto'}}><RelationshipsDiagram onTableClick={t=>setDrawerTable(t)} onTableContext={(t,x,y)=>onInfoPanel(t,x,y)}/></div>}
-      {explorerView==='tables'&&<div style={{padding:'20px 24px',overflowY:'auto',flex:1}}>
-      <div style={{display:'flex',gap:12,marginBottom:18,flexWrap:'wrap',alignItems:'flex-end'}}>
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:C.bg}}>
+      <div style={{padding:'18px 22px 0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:16}}>
         <div>
-          <h2 style={{fontSize:18,fontWeight:700,color:C.text,letterSpacing:'-0.3px',marginBottom:2}}>Database Explorer</h2>
-          <p style={{fontSize:12.5,color:C.textMuted}}>Northwind · Right-click any table for options</p>
+          <div style={{fontSize:30,fontWeight:800,color:C.navBg,letterSpacing:'-0.04em',marginBottom:4}}>Database Explorer</div>
+          <div style={{fontSize:14,color:C.textMuted}}>Click any table for details</div>
         </div>
-        <div style={{marginLeft:'auto',display:'flex',gap:10,alignItems:'center'}}>
-          {[['Tables',String(TABLES.length)],['Columns',String(ALL_COLS.length)],['Rows',TABLES.reduce((s,t)=>s+parseInt(t.rows.replace(/,/g,''),10),0).toLocaleString()]].map(([k,v])=>(
-            <div key={k} style={{background:'#fff',borderRadius:7,border:`1px solid ${C.cardBorder}`,padding:'5px 12px',textAlign:'center'}}>
-              <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em'}}>{k}</div>
-              <div style={{fontSize:15,fontWeight:700,color:C.text}}>{v}</div>
-            </div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {[['tables','Tables'],['schema','Schema']].map(([v,l])=>(
+            <button key={v} onClick={()=>setExplorerView(v as any)}
+              style={{background:explorerView===v?C.accentBg:'#fff',border:`1px solid ${explorerView===v?C.greenBorder:C.cardBorder}`,padding:'10px 14px',fontSize:13.5,fontWeight:700,color:explorerView===v?C.accentDark:C.textMuted,cursor:'pointer',borderRadius:999,fontFamily:'Inter,sans-serif'}}>
+              {l}
+            </button>
           ))}
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search tables and columns…"
-            style={{padding:'7px 12px',borderRadius:7,border:`1px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:'Inter,sans-serif',width:220,background:'#fff'}}
-            onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
         </div>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(310px,1fr))',gap:12}}>
-        {filtered.map(tbl=>(
-          <div key={tbl.name}
-            style={{background:'#fff',borderRadius:9,border:`1px solid ${C.cardBorder}`,cursor:'pointer',overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}
-            onClick={()=>setDrawerTable(tbl)} onContextMenu={e=>{e.preventDefault();onInfoPanel(tbl,e.clientX,e.clientY)}}>
-            <div style={{padding:'11px 14px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:9,background:C.tableHead}}>
-              <div style={{width:9,height:9,borderRadius:'50%',background:tbl.color,flexShrink:0}}/>
-              <span style={{fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:13.5,color:C.text,flex:1}}>{tbl.name}</span>
-              <span style={{background:`${tbl.color}18`,color:tbl.color,fontSize:10.5,fontWeight:600,padding:'2px 7px',borderRadius:4}}>{tbl.rows} rows</span>
-            </div>
-            <div style={{padding:'11px 14px'}}>
-              <p style={{fontSize:12.5,color:C.textMuted,marginBottom:9,lineHeight:1.5}}>{tbl.desc}</p>
-              <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:9}}>
-                {tbl.teams.map(t=><span key={t} style={{background:C.accentBg,border:`1px solid ${C.accent}22`,color:C.accent,fontSize:10.5,fontWeight:500,padding:'2px 7px',borderRadius:4}}>{t}</span>)}
-              </div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
-                {tbl.columns.map(c=>(
-                  <span key={c.n} style={{display:'inline-flex',alignItems:'center',gap:3,background:C.bg,border:`1px solid ${C.cardBorder}`,borderRadius:4,padding:'2px 6px'}}>
-                    <span style={{width:5,height:5,borderRadius:'50%',background:TC[c.t],display:'inline-block',flexShrink:0}}/>
-                    <span style={{fontFamily:"'JetBrains Mono'",fontSize:10.5,color:C.textMuted}}>{c.n}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
+      {explorerView==='schema'&&<div style={{flex:1,overflowY:'auto',padding:'16px 22px 22px'}}><BrowserShell><div style={{padding:20}}><RelationshipsDiagram onTableClick={t=>onInfoPanel(t,0,0)} onTableContext={(t,x,y)=>onInfoPanel(t,x,y)} displayTables={displayTables}/></div></BrowserShell></div>}
+      {explorerView==='tables'&&<div style={{padding:'16px 22px 22px',overflowY:'auto',flex:1}}>
+        <div style={{display:'flex',gap:12,marginBottom:18,flexWrap:'wrap',alignItems:'center'}}>
+          {[['Tables',String(displayTables.length)],['Columns',String(displayTables.reduce((s:number,t:any)=>s+(t.columns?.length||0),0))]].map(([k,v],i)=>(
+            <LandingKpi key={k} label={k} value={v} highlight={i===0}/>
+          ))}
+          <div style={{marginLeft:'auto'}}>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search tables and columns…"
+              style={{padding:'11px 14px',borderRadius:14,border:`1px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif',width:260,background:'#fff'}}
+              onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.cardBorder}/>
           </div>
-        ))}
-      </div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(360px,1fr))',gap:16}}>
+          {filtered.map((tbl:any)=>(
+            <BrowserShell key={tbl.name} style={{cursor:'pointer'}} >
+              <div onClick={()=>onInfoPanel(tbl,0,0)} onContextMenu={e=>{e.preventDefault();onInfoPanel(tbl,e.clientX,e.clientY)}} style={{padding:'16px 18px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
+                  <div style={{width:10,height:10,borderRadius:'50%',background:tbl.color,flexShrink:0}}/>
+                  <span style={{fontFamily:"'JetBrains Mono'",fontWeight:800,fontSize:15,color:C.text,flex:1}}>{tbl.name}</span>
+                  {tbl.rows&&<span className="landing-chip" style={{color:tbl.color,background:`${tbl.color}18`,borderColor:`${tbl.color}28`}}>{tbl.rows} rows</span>}
+                </div>
+                {tbl.teams&&tbl.teams.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+                  {tbl.teams.map((t:any)=><span key={t} className="landing-chip" style={{color:C.accentDark,background:C.accentBg,borderColor:C.greenBorder}}>{t}</span>)}
+                </div>}
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {tbl.columns.map((c:any)=>(
+                    <span key={c.n} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#FBFDFC',border:`1px solid ${C.cardBorder}`,borderRadius:999,padding:'4px 9px'}}>
+                      <span style={{width:6,height:6,borderRadius:'50%',background:TC[c.t],display:'inline-block',flexShrink:0}}/>
+                      <span style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:C.textMuted}}>{c.n}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </BrowserShell>
+          ))}
+        </div>
       </div>}
     </div>
   )
-} 
+}
+
 // ── Alerts Tab ────────────────────────────────────────────────────────────────
-type AlertDef = {id:string,name:string,sql:string,detailSql?:string,severity:'warning'|'critical',description:string}
+type AlertRun = {id?:string,ran_at?:string,status?:'ok'|'triggered'|'error',triggered?:boolean,result_count?:number,condition_value?:number|null,message?:string|null,rows_data?:any[],fields?:string[]}
+type AlertDef = {
+  id:string
+  name:string
+  description:string
+  sql:string
+  sourceType:'sql'|'ai'
+  prompt?:string
+  detailSql?:string
+  visibleColumns?:string[]
+  severity:'warning'|'critical'
+  conditionType:'rows_gt_zero'|'value_gt'|'value_gte'|'value_lt'|'value_lte'|'value_eq'
+  conditionField?:string
+  threshold?:number|null
+  schedule?:string
+  refreshHours?:number
+  shared?:boolean
+  isActive?:boolean
+  lastCheckedAt?:string|null
+  lastTriggeredAt?:string|null
+  latestRun?:AlertRun|null
+}
 const DEFAULT_ALERTS:AlertDef[] = [
   {
-    id:'a1',name:'Orders without ship date',severity:'warning',
+    id:'a1',name:'Orders without ship date',severity:'warning',sourceType:'sql',conditionType:'rows_gt_zero',isActive:true,
     description:'Orders placed over 7 days ago that have not been shipped yet',
     sql:`SELECT COUNT(*) AS count FROM orders WHERE shipped_date IS NULL AND order_date < NOW() - INTERVAL '7 days'`,
     detailSql:`SELECT o.order_id, c.company_name AS customer, o.order_date, o.required_date, e.last_name AS employee, o.ship_country, o.freight FROM orders o LEFT JOIN customers c ON o.customer_id=c.customer_id LEFT JOIN employees e ON o.employee_id=e.employee_id WHERE o.shipped_date IS NULL AND o.order_date < NOW() - INTERVAL '7 days' ORDER BY o.order_date ASC LIMIT 50`,
-  },
-  {
-    id:'a2',name:'Out of stock products',severity:'critical',
-    description:'Active products with zero stock',
-    sql:`SELECT COUNT(*) AS count FROM products WHERE units_in_stock = 0 AND discontinued = 0`,
-    detailSql:`SELECT p.product_name, c.category_name, p.units_in_stock, p.units_on_order, p.reorder_level, s.company_name AS supplier FROM products p LEFT JOIN categories c ON p.category_id=c.category_id LEFT JOIN suppliers s ON p.supplier_id=s.supplier_id WHERE p.units_in_stock = 0 AND p.discontinued = 0 ORDER BY p.product_name`,
-  },
-  {
-    id:'a3',name:'High value unshipped orders',severity:'critical',
-    description:'Unshipped orders with total value over $1,000',
-    sql:`SELECT COUNT(*) AS count FROM orders o JOIN order_details od ON o.order_id=od.order_id WHERE o.shipped_date IS NULL GROUP BY o.order_id HAVING SUM(od.unit_price*od.quantity)>1000`,
-    detailSql:`SELECT o.order_id, c.company_name AS customer, o.order_date, o.required_date, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount))::numeric,2) AS order_value, o.ship_country FROM orders o JOIN order_details od ON o.order_id=od.order_id LEFT JOIN customers c ON o.customer_id=c.customer_id WHERE o.shipped_date IS NULL GROUP BY o.order_id, c.company_name, o.order_date, o.required_date, o.ship_country HAVING SUM(od.unit_price*od.quantity)>1000 ORDER BY order_value DESC LIMIT 50`,
-  },
-  {
-    id:'a4',name:'Customers with no orders in 90 days',severity:'warning',
-    description:'Customers who have not placed an order in the last 90 days',
-    sql:`SELECT COUNT(*) AS count FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.customer_id AND o.order_date > NOW() - INTERVAL '90 days')`,
-    detailSql:`SELECT c.company_name AS customer, c.contact_name, c.country, c.phone, MAX(o.order_date) AS last_order_date, COUNT(o.order_id) AS total_orders FROM customers c LEFT JOIN orders o ON c.customer_id=o.customer_id WHERE NOT EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id=c.customer_id AND o2.order_date > NOW() - INTERVAL '90 days') GROUP BY c.customer_id, c.company_name, c.contact_name, c.country, c.phone ORDER BY last_order_date ASC NULLS FIRST LIMIT 50`,
+    visibleColumns:['order_id','customer','order_date','required_date','employee','ship_country','freight']
   },
 ]
 
-function AlertCard({alert}:{alert:AlertDef}) {
-  const [count,setCount]=useState<number|null>(null)
-  const [rows,setRows]=useState<any[]>([])
-  const [fields,setFields]=useState<string[]>([])
-  const [loading,setLoading]=useState(true)
-  const [detailLoading,setDetailLoading]=useState(false)
+function getAlertAccent(alert:AlertDef){
+  const neverRun = !alert.latestRun && !alert.lastCheckedAt
+  if(alert.isActive===false) return {label:'inactive', color:C.textLight, bg:'#F8FAFD', border:C.cardBorder, icon:'⏸'}
+  if(neverRun) return {label:'never run', color:C.textLight, bg:'#F8FAFD', border:C.cardBorder, icon:'⏺'}
+  if(alert.latestRun?.triggered) {
+    const color = alert.severity==='critical' ? C.danger : C.warn
+    const bg = alert.severity==='critical' ? '#FEF2F2' : '#FFFBEB'
+    const border = alert.severity==='critical' ? '#FECACA' : '#FDE68A'
+    return {label:'triggered', color, bg, border, icon: alert.severity==='critical' ? '🔴' : '🟡'}
+  }
+  return {label:'ok', color:C.success, bg:'#ECFDF5', border:'#A7F3D0', icon:'✅'}
+}
+
+function visibleAlertFields(alert:AlertDef, fields:string[]){
+  if(alert.visibleColumns && alert.visibleColumns.length) return fields.filter(f=>alert.visibleColumns!.includes(f))
+  return fields
+}
+
+function AlertCard({alert,onRun,onEdit,onDelete}:{alert:AlertDef,onRun:(a:AlertDef)=>Promise<void>,onEdit:(a:AlertDef)=>void,onDelete:(a:AlertDef)=>Promise<void>}) {
   const [expanded,setExpanded]=useState(false)
   const [menuOpen,setMenuOpen]=useState(false)
-
-  // Count query on mount
-  useEffect(()=>{
-    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:alert.sql})})
-      .then(r=>r.json()).then(d=>{
-        if(!d.error&&d.rows?.[0])setCount(Number(Object.values(d.rows[0])[0])||0)
-      }).catch(()=>setCount(0)).finally(()=>setLoading(false))
-  },[alert.id])
-
-  // Detail rows when expanded — uses detailSql if available, otherwise falls back to main sql
-  useEffect(()=>{
-    if(!expanded||rows.length>0)return
-    const sql=alert.detailSql||alert.sql
-    setDetailLoading(true)
-    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:sql})})
-      .then(r=>r.json()).then(d=>{if(!d.error){setRows(d.rows||[]);setFields(d.fields||[])}})
-      .catch(()=>{}).finally(()=>setDetailLoading(false))
-  },[expanded,alert.id])
+  const [running,setRunning]=useState(false)
+  const accent = getAlertAccent(alert)
+  const rows = alert.latestRun?.rows_data || []
+  const allFields = alert.latestRun?.fields || []
+  const fields = visibleAlertFields(alert, allFields)
 
   useEffect(()=>{
     const close=()=>setMenuOpen(false)
@@ -1761,46 +2393,37 @@ function AlertCard({alert}:{alert:AlertDef}) {
     return()=>document.removeEventListener('click',close)
   },[menuOpen])
 
-  const isFiring=count!==null&&count>0
-  const color=alert.severity==='critical'?C.danger:C.warn
-  const bg=alert.severity==='critical'?'#FEF2F2':'#FFFBEB'
-  const border=alert.severity==='critical'?'#FECACA':'#FDE68A'
-
   const exportCSV=()=>{
     if(!rows.length)return
-    const csv=[fields.join(','),...rows.map(r=>fields.map(f=>String(r[f]??'')).join(','))].join('\n')
+    const cols = fields.length?fields:allFields
+    const csv=[cols.join(','),...rows.map(r=>cols.map(f=>JSON.stringify(r[f]??'')).join(','))].join('\n')
     const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=`${alert.name}.csv`;a.click()
   }
 
   return(
-    <div style={{borderRadius:10,border:`1px solid ${isFiring?border:C.cardBorder}`,overflow:'hidden',background:'#fff'}}>
-      <div onClick={()=>setExpanded(s=>!s)}
-        style={{background:isFiring?bg:'#fff',padding:'14px 18px',display:'flex',gap:14,alignItems:'center',cursor:'pointer'}}
-        onMouseOver={e=>{if(!isFiring)(e.currentTarget as HTMLElement).style.background='#FAFAFA'}}
-        onMouseOut={e=>{(e.currentTarget as HTMLElement).style.background=isFiring?bg:'#fff'}}>
-        <div style={{width:36,height:36,borderRadius:8,background:isFiring?bg:'#F8FAFD',border:`1.5px solid ${isFiring?border:C.cardBorder}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>
-          {loading?'…':isFiring?alert.severity==='critical'?'🔴':'🟡':'✅'}
-        </div>
+    <div style={{borderRadius:10,border:`1px solid ${accent.border}`,overflow:'visible',background:'#fff',position:'relative',zIndex:menuOpen?50:'auto'}}>
+      <div onClick={()=>setExpanded(s=>!s)} style={{background:accent.bg,padding:'14px 18px',display:'flex',gap:14,alignItems:'center',cursor:'pointer'}}>
+        <div style={{width:36,height:36,borderRadius:8,background:'#fff',border:`1.5px solid ${accent.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>{running?'…':accent.icon}</div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
-            <span style={{fontSize:13.5,fontWeight:600,color:isFiring?color:C.text}}>{alert.name}</span>
-            <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:isFiring?bg:'#F0F4F8',color:isFiring?color:C.textLight,border:`1px solid ${isFiring?border:C.cardBorder}`}}>{alert.severity}</span>
+            <span style={{fontSize:13.5,fontWeight:600,color:accent.color}}>{alert.name}</span>
+            <span style={{fontSize:11,padding:'1px 7px',borderRadius:4,fontWeight:600,background:'#fff',color:accent.color,border:`1px solid ${accent.border}`}}>{accent.label}</span>
           </div>
           <div style={{fontSize:12.5,color:C.textMuted}}>{alert.description}</div>
+          <div style={{fontSize:12,color:C.textLight,marginTop:3}}>Last checked: {alert.latestRun?.ran_at?new Date(alert.latestRun.ran_at).toLocaleString():alert.lastCheckedAt?new Date(alert.lastCheckedAt).toLocaleString():'Never'}</div>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
-          {loading?<span style={{fontSize:12,color:C.textLight}}>Checking…</span>
-            :<span style={{fontSize:13,fontWeight:700,color:isFiring?color:C.success}}>{isFiring?`${count} affected`:count===0?'All clear':''}</span>}
+          <span style={{fontSize:13,fontWeight:700,color:accent.color}}>
+            {alert.latestRun?.triggered ? `${alert.latestRun.result_count||0} affected` : accent.label==='ok' ? 'All clear' : ''}
+          </span>
           <div style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
-            <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
-              style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1,lineHeight:1}}
-              onMouseOver={e=>e.currentTarget.style.background='#E5E7EB'} onMouseOut={e=>e.currentTarget.style.background='none'}>···</button>
+            <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:16,padding:'2px 6px',borderRadius:4,fontWeight:700,letterSpacing:1,lineHeight:1}}>···</button>
             {menuOpen&&(
-              <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:160,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
-                <button onClick={()=>{exportCSV();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>⬇ Export CSV</button>
-                <button onClick={()=>{setExpanded(true);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                  onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>👁 View results</button>
+              <div style={{position:'absolute',right:0,top:'calc(100% + 6px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 12px 28px rgba(0,0,0,0.14)',zIndex:9999,minWidth:170,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+                <button onClick={async()=>{setRunning(true); await onRun(alert).finally(()=>setRunning(false)); setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>▶ Run now</button>
+                <button onClick={()=>{onEdit(alert);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>✎ Edit alert</button>
+                <button onClick={()=>{exportCSV();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>⬇ Export CSV</button>
+                <button onClick={async()=>{await onDelete(alert);setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>🗑 Delete</button>
               </div>
             )}
           </div>
@@ -1808,42 +2431,167 @@ function AlertCard({alert}:{alert:AlertDef}) {
         </div>
       </div>
       {expanded&&(
-        <div style={{borderTop:`1px solid ${isFiring?border:C.cardBorder}`,background:'#FAFAFA'}}>
-          {detailLoading
-            ?<div style={{padding:'14px 18px',display:'flex',alignItems:'center',gap:8,fontSize:13,color:C.textLight}}>
-              <div style={{width:12,height:12,border:`2px solid ${C.cardBorder}`,borderTop:`2px solid ${C.accent}`,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>Loading results…
-            </div>
-            :rows.length===0
-              ?<div style={{padding:'14px 18px',fontSize:13,color:C.textMuted}}>No results — all clear.</div>
-              :<div style={{overflowX:'auto'}}>
-                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
-                  <thead><tr style={{background:C.tableHead}}>
-                    {fields.map(f=><th key={f} style={{padding:'8px 14px',textAlign:'left',fontSize:11,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}
-                  </tr></thead>
-                  <tbody>{rows.slice(0,50).map((r,i)=>(
-                    <tr key={i} style={{background:i%2===0?'#fff':'#F8FAFD',borderBottom:`1px solid #F1F5F9`}}>
-                      {fields.map(f=><td key={f} style={{padding:'7px 14px',color:C.text,whiteSpace:'nowrap',fontSize:13}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():r[f] instanceof Date?new Date(r[f]).toLocaleDateString():String(r[f]??'')}</td>)}
-                    </tr>
-                  ))}</tbody>
-                </table>
-                {rows.length>50&&<div style={{padding:'8px 14px',fontSize:11,color:C.textLight,borderTop:`1px solid ${C.cardBorder}`}}>Showing 50 of {rows.length} rows · Export CSV for all</div>}
-              </div>}
+        <div style={{borderTop:`1px solid ${accent.border}`,background:'#FAFAFA'}}>
+          <div style={{padding:'10px 14px',fontSize:12.5,color:C.textMuted,display:'flex',gap:14,flexWrap:'wrap'}}>
+            <span><strong>Schedule:</strong> {alert.schedule||'daily'}</span>
+            <span><strong>Source:</strong> {alert.sourceType||'sql'}</span>
+            <span><strong>Condition:</strong> {alert.conditionType}{alert.threshold!=null?` ${alert.threshold}`:''}</span>
+          </div>
+          {rows.length===0
+            ?<div style={{padding:'14px 18px',fontSize:13,color:C.textMuted}}>No saved results yet. Use Run now to test.</div>
+            :<div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+                <thead><tr style={{background:C.tableHead}}>{fields.map(f=><th key={f} style={{padding:'8px 14px',textAlign:'left',fontSize:11,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`1px solid ${C.cardBorder}`,whiteSpace:'nowrap'}}>{f.replace(/_/g,' ')}</th>)}</tr></thead>
+                <tbody>{rows.slice(0,50).map((r,i)=><tr key={i} style={{background:i%2===0?'#fff':'#F8FAFD',borderBottom:`1px solid #F1F5F9`}}>{fields.map(f=><td key={f} style={{padding:'7px 14px',color:C.text,whiteSpace:'nowrap',fontSize:13}}>{typeof r[f]==='number'?Number(r[f]).toLocaleString():String(r[f]??'')}</td>)}</tr>)}</tbody>
+              </table>
+            </div>}
         </div>
       )}
     </div>
   )
 }
 
-function AlertsTab() {
-  const [alerts,setAlerts]=useState<AlertDef[]>(DEFAULT_ALERTS)
+function AlertsTab({isDemo}:{isDemo:boolean}) {
+  const [alerts,setAlerts]=useState<AlertDef[]>(()=>isDemo?DEFAULT_ALERTS:[])
+  const [loading,setLoading]=useState(!isDemo)
   const [showAdd,setShowAdd]=useState(false)
-  const [newAlert,setNewAlert]=useState({name:'',description:'',sql:'',severity:'warning' as 'warning'|'critical'})
+  const [saving,setSaving]=useState(false)
+  const [previewing,setPreviewing]=useState(false)
+  const [error,setError]=useState('')
+  const [newAlert,setNewAlert]=useState<any>({
+    id:'',name:'',description:'',sourceType:'ai',prompt:'',sql:'',detailSql:'',severity:'warning',conditionType:'rows_gt_zero',conditionField:'',threshold:'',schedule:'daily',refreshHours:24,shared:false,isActive:true,visibleColumns:[]
+  })
+  const [preview,setPreview]=useState<{sql:string,rows:any[],fields:string[]} | null>(null)
 
-  const addAlert=()=>{
-    if(!newAlert.name||!newAlert.sql)return
-    setAlerts(p=>[...p,{...newAlert,id:`a${Date.now()}`}])
-    setNewAlert({name:'',description:'',sql:'',severity:'warning'})
-    setShowAdd(false)
+  const loadAlerts = useCallback(async()=>{
+    if(isDemo){ setAlerts(DEFAULT_ALERTS); return }
+    setLoading(true)
+    try{
+      const res = await fetch('/api/alerts', { cache:'no-store' })
+      const data = await res.json()
+      if(!res.ok) throw new Error(data?.error||'Failed to load alerts')
+      setAlerts(data.alerts || [])
+    }catch(e:any){ setError(e.message || 'Failed to load alerts') }
+    finally{ setLoading(false) }
+  },[isDemo])
+
+  useEffect(()=>{ loadAlerts() },[loadAlerts])
+
+  const evaluateCondition = (rows:any[], fields:string[], conditionType:string, conditionField?:string, threshold?:any) => {
+    const numThreshold = threshold===''||threshold==null ? null : Number(threshold)
+    const count = rows.length
+    let conditionValue:any = count
+    let triggered = false
+    if(conditionType==='rows_gt_zero') triggered = count > 0
+    else {
+      const field = conditionField || fields.find(f=>/^count$|^value$|^total$|^amount$/i.test(f)) || fields[0]
+      const raw = rows[0]?.[field]
+      conditionValue = raw==null ? null : Number(raw)
+      if(conditionValue!=null && numThreshold!=null){
+        if(conditionType==='value_gt') triggered = conditionValue > numThreshold
+        if(conditionType==='value_gte') triggered = conditionValue >= numThreshold
+        if(conditionType==='value_lt') triggered = conditionValue < numThreshold
+        if(conditionType==='value_lte') triggered = conditionValue <= numThreshold
+        if(conditionType==='value_eq') triggered = conditionValue === numThreshold
+      }
+    }
+    return { triggered, conditionValue, result_count: count }
+  }
+
+  const runPreview = async()=>{
+    setError('')
+    setPreviewing(true)
+    try{
+      let sql = newAlert.sql?.trim()
+      if(newAlert.sourceType==='ai'){
+        const res = await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:newAlert.prompt})})
+        const data = await res.json()
+        if(!res.ok) throw new Error(data?.error||'Failed to generate alert SQL')
+        sql = data.sql || ''
+        if(!sql) throw new Error('Could not generate alert SQL')
+      }
+      const detailSql = (newAlert.detailSql || sql).trim()
+      const res2 = await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:detailSql})})
+      const data2 = await res2.json()
+      if(!res2.ok) throw new Error(data2?.error || 'Failed to preview alert')
+      const fields = data2.fields || []
+      const rows = data2.rows || []
+      setNewAlert((p:any)=>({...p, sql, detailSql: detailSql || sql, visibleColumns: p.visibleColumns?.length?p.visibleColumns:fields}))
+      setPreview({sql, rows, fields})
+    }catch(e:any){ setError(e.message||'Preview failed'); setPreview(null) }
+    finally{ setPreviewing(false) }
+  }
+
+  const saveAlert = async()=>{
+    if(!(newAlert.name||'').trim() || !(newAlert.sql||preview?.sql||'').trim()) return
+    setSaving(true); setError('')
+    try{
+      const payload = {
+        name:newAlert.name, description:newAlert.description, sourceType:newAlert.sourceType, prompt:newAlert.prompt,
+        sql:newAlert.sql || preview?.sql, detailSql:newAlert.detailSql || preview?.sql,
+        conditionType:newAlert.conditionType, conditionField:newAlert.conditionField || null,
+        threshold:newAlert.threshold===''?null:Number(newAlert.threshold), schedule:newAlert.schedule,
+        refreshHours:Number(newAlert.refreshHours)||24, shared:!!newAlert.shared, isActive:!!newAlert.isActive,
+        severity:newAlert.severity, visibleColumns:newAlert.visibleColumns||preview?.fields||[]
+      }
+      const url = '/api/alerts'
+      const method = newAlert.id ? 'PATCH' : 'POST'
+      const body = method==='PATCH' ? {...payload, id:newAlert.id} : payload
+      const res = await fetch(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      const data = await res.json()
+      if(!res.ok) throw new Error(data?.error || 'Failed to save alert')
+      setShowAdd(false)
+      setPreview(null)
+      setNewAlert({id:'',name:'',description:'',sourceType:'ai',prompt:'',sql:'',detailSql:'',severity:'warning',conditionType:'rows_gt_zero',conditionField:'',threshold:'',schedule:'daily',refreshHours:24,shared:false,isActive:true,visibleColumns:[]})
+      await loadAlerts()
+    }catch(e:any){ setError(e.message||'Failed to save alert') }
+    finally{ setSaving(false) }
+  }
+
+  const runAlertNow = async(alert:AlertDef)=>{
+    const sql = (alert.detailSql || alert.sql || '').trim()
+    const res = await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:sql})})
+    const data = await res.json()
+    if(!res.ok) throw new Error(data?.error || 'Failed to run alert')
+    const fields = data.fields || []
+    const rows = data.rows || []
+    const evald = evaluateCondition(rows, fields, alert.conditionType, alert.conditionField, alert.threshold)
+    const now = new Date().toISOString()
+    const patch = {
+      id: alert.id,
+      lastCheckedAt: now,
+      lastTriggeredAt: evald.triggered ? now : null,
+      run: {
+        status: evald.triggered ? 'triggered' : 'ok',
+        triggered: evald.triggered,
+        result_count: evald.result_count,
+        condition_value: evald.conditionValue,
+        message: evald.triggered ? 'Condition met' : 'All clear',
+        rows_data: rows,
+        fields,
+      }
+    }
+    const res2 = await fetch('/api/alerts',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)})
+    const data2 = await res2.json()
+    if(!res2.ok) throw new Error(data2?.error || 'Failed to save alert run')
+    await loadAlerts()
+  }
+
+  const editAlert = (a:AlertDef)=>{
+    setNewAlert({
+      id:a.id,name:a.name,description:a.description||'',sourceType:a.sourceType||'sql',prompt:a.prompt||'',sql:a.sql||'',detailSql:a.detailSql||a.sql||'',
+      severity:a.severity||'warning',conditionType:a.conditionType||'rows_gt_zero',conditionField:a.conditionField||'',threshold:a.threshold??'',schedule:a.schedule||'daily',refreshHours:a.refreshHours||24,
+      shared:!!a.shared,isActive:a.isActive!==false,visibleColumns:a.visibleColumns||a.latestRun?.fields||[]
+    })
+    setPreview(a.latestRun ? { sql:a.sql, rows:a.latestRun.rows_data||[], fields:a.latestRun.fields||[] } : null)
+    setShowAdd(true)
+  }
+
+  const deleteAlert = async(a:AlertDef)=>{
+    const res = await fetch('/api/alerts',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.id})})
+    const data = await res.json().catch(()=>({}))
+    if(!res.ok) throw new Error(data?.error || 'Failed to delete alert')
+    await loadAlerts()
   }
 
   return(
@@ -1851,56 +2599,61 @@ function AlertsTab() {
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
         <div>
           <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:2}}>Alerts</div>
-          <div style={{fontSize:12.5,color:C.textMuted}}>Conditions that run against your live data. Red or yellow means something needs attention.</div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>Saved conditions with trigger history. Page load shows latest status only. Use Run now to test.</div>
         </div>
-        <div style={{marginLeft:'auto'}}>
-          <button onClick={()=>setShowAdd(s=>!s)}
-            style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
+        <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+          <button onClick={loadAlerts} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>Refresh</button>
+          <button onClick={()=>{setShowAdd(s=>!s); setError('')}} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
         </div>
       </div>
 
-      {/* Add alert form */}
       {showAdd&&(
         <div style={{background:C.accentBg,border:`1px solid ${C.greenBorder}`,borderRadius:10,padding:'16px 18px',marginBottom:16,display:'flex',flexDirection:'column',gap:10}}>
+          <div style={{display:'flex',gap:10,alignItems:'center'}}>
+            <button onClick={()=>setNewAlert((p:any)=>({...p,sourceType:'ai'}))} style={{padding:'6px 12px',borderRadius:6,border:`1px solid ${newAlert.sourceType==='ai'?C.accent:C.cardBorder}`,background:newAlert.sourceType==='ai'?C.accentBg:'#fff',color:newAlert.sourceType==='ai'?C.accent:C.textMuted,cursor:'pointer'}}>AI</button>
+            <button onClick={()=>setNewAlert((p:any)=>({...p,sourceType:'sql'}))} style={{padding:'6px 12px',borderRadius:6,border:`1px solid ${newAlert.sourceType==='sql'?C.accent:C.cardBorder}`,background:newAlert.sourceType==='sql'?C.accentBg:'#fff',color:newAlert.sourceType==='sql'?C.accent:C.textMuted,cursor:'pointer'}}>SQL</button>
+          </div>
           <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-            <div style={{flex:1,minWidth:180}}>
-              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Alert name</div>
-              <input value={newAlert.name} onChange={e=>setNewAlert(p=>({...p,name:e.target.value}))} placeholder="e.g. Low stock warning"
-                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
+            <div style={{flex:1,minWidth:180}}><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Alert name</div><input value={newAlert.name} onChange={e=>setNewAlert((p:any)=>({...p,name:e.target.value}))} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`}}/></div>
+            <div style={{width:150}}><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Severity</div><select value={newAlert.severity} onChange={e=>setNewAlert((p:any)=>({...p,severity:e.target.value}))} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff'}}><option value='warning'>Warning</option><option value='critical'>Critical</option></select></div>
+            <div style={{width:180}}><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Schedule</div><select value={newAlert.schedule} onChange={e=>setNewAlert((p:any)=>({...p,schedule:e.target.value}))} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff'}}><option value='daily'>Daily</option><option value='weekly'>Weekly</option><option value='manual'>Manual</option></select></div>
+          </div>
+          <div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Description</div><input value={newAlert.description} onChange={e=>setNewAlert((p:any)=>({...p,description:e.target.value}))} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`}}/></div>
+          {newAlert.sourceType==='ai'
+            ?<div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Describe the alert</div><textarea value={newAlert.prompt} onChange={e=>setNewAlert((p:any)=>({...p,prompt:e.target.value}))} rows={3} placeholder='e.g. alert me when overdue invoices exceed 25' style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13}}/></div>
+            :<div><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>SQL</div><textarea value={newAlert.sql} onChange={e=>setNewAlert((p:any)=>({...p,sql:e.target.value}))} rows={4} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontFamily:"'JetBrains Mono',monospace"}}/></div>}
+          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+            <div style={{width:180}}><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Condition</div><select value={newAlert.conditionType} onChange={e=>setNewAlert((p:any)=>({...p,conditionType:e.target.value}))} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff'}}><option value='rows_gt_zero'>Rows &gt; 0</option><option value='value_gt'>Value &gt;</option><option value='value_gte'>Value &gt;=</option><option value='value_lt'>Value &lt;</option><option value='value_lte'>Value &lt;=</option><option value='value_eq'>Value =</option></select></div>
+            {newAlert.conditionType!=='rows_gt_zero'&&<><div style={{width:180}}><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Condition field</div><input value={newAlert.conditionField} onChange={e=>setNewAlert((p:any)=>({...p,conditionField:e.target.value}))} placeholder='e.g. count' style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`}}/></div><div style={{width:120}}><div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Threshold</div><input value={newAlert.threshold} onChange={e=>setNewAlert((p:any)=>({...p,threshold:e.target.value}))} style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`}}/></div></>}
+            <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13,color:C.text}}><input type='checkbox' checked={!!newAlert.shared} onChange={e=>setNewAlert((p:any)=>({...p,shared:e.target.checked}))}/> Share with company</label>
+            <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13,color:C.text}}><input type='checkbox' checked={!!newAlert.isActive} onChange={e=>setNewAlert((p:any)=>({...p,isActive:e.target.checked}))}/> Active</label>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button onClick={runPreview} disabled={previewing} style={{padding:'7px 14px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.text,fontSize:13,fontWeight:600,cursor:'pointer'}}> {previewing?'Previewing…':'Preview'} </button>
+            <button onClick={saveAlert} disabled={saving || !(newAlert.name||'').trim() || !(newAlert.sql||preview?.sql||'').trim()} style={{padding:'7px 18px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer'}}> {saving?'Saving…':(newAlert.id?'Update alert':'Save alert')} </button>
+            <button onClick={()=>{setShowAdd(false);setPreview(null);setError('')}} style={{padding:'7px 12px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,fontSize:13,cursor:'pointer'}}>Cancel</button>
+          </div>
+          {error&&<div style={{padding:'8px 10px',borderRadius:6,background:'#FEF2F2',color:C.danger,fontSize:12.5}}>{error}</div>}
+          {preview&&(
+            <div style={{background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,overflow:'hidden'}}>
+              <div style={{padding:'10px 12px',borderBottom:`1px solid ${C.cardBorder}`,fontSize:12.5,fontWeight:600,color:C.text}}>SQL preview</div>
+              <div style={{padding:12}}><SQLEditor value={preview.sql} onChange={(v)=>{setPreview((p:any)=>p?({...p,sql:v}):p); setNewAlert((p:any)=>({...p,sql:v}))}} height={120} /></div>
+              <div style={{padding:'0 12px 12px'}}>
+                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>Columns to show</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:10}}>
+                  {preview.fields.map((f:string)=><label key={f} style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,color:C.text}}><input type='checkbox' checked={(newAlert.visibleColumns||[]).includes(f)} onChange={e=>setNewAlert((p:any)=>({...p,visibleColumns:e.target.checked?[...(p.visibleColumns||[]),f]:(p.visibleColumns||[]).filter((x:string)=>x!==f)}))}/>{f.replace(/_/g,' ')}</label>)}
+                </div>
+                <ResultsTable rows={preview.rows} fields={visibleAlertFields(newAlert, preview.fields)} compact={false}/>
+              </div>
             </div>
-            <div style={{width:140}}>
-              <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Severity</div>
-              <select value={newAlert.severity} onChange={e=>setNewAlert(p=>({...p,severity:e.target.value as any}))}
-                style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}>
-                <option value="warning">Warning</option>
-                <option value="critical">Critical</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Description</div>
-            <input value={newAlert.description} onChange={e=>setNewAlert(p=>({...p,description:e.target.value}))} placeholder="What does this alert check for?"
-              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:13,color:C.text,fontFamily:'Inter,sans-serif'}}/>
-          </div>
-          <div>
-            <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>SQL — returns a count, alert fires when count &gt; 0</div>
-            <textarea value={newAlert.sql} onChange={e=>setNewAlert(p=>({...p,sql:e.target.value}))} rows={3} placeholder="SELECT COUNT(*) AS count FROM ..."
-              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,fontSize:12.5,color:C.text,fontFamily:"'JetBrains Mono',monospace",resize:'vertical',lineHeight:1.6}}/>
-          </div>
-          <div style={{display:'flex',gap:6}}>
-            <button onClick={addAlert} style={{padding:'7px 18px',borderRadius:6,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Save alert</button>
-            <button onClick={()=>setShowAdd(false)} style={{padding:'7px 12px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,fontSize:13,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Cancel</button>
-          </div>
+          )}
         </div>
       )}
 
-      <div style={{display:'flex',flexDirection:'column',gap:10}}>
-        {alerts.map(a=><AlertCard key={a.id} alert={a}/>)}
-      </div>
+      {loading ? <div style={{fontSize:13,color:C.textLight}}>Loading alerts…</div> : <div style={{display:'flex',flexDirection:'column',gap:10}}>{alerts.map(a=><AlertCard key={a.id} alert={a} onRun={runAlertNow} onEdit={editAlert} onDelete={deleteAlert} />)}</div>}
     </div>
   )
 }
-
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 const PRESET_QUERIES = [
   { id:'d1', name:'Revenue by Category', sql:`SELECT c.category_name, ROUND(SUM(od.unit_price*od.quantity*(1-od.discount)),0) AS revenue FROM order_details od JOIN products p ON od.product_id=p.product_id JOIN categories c ON p.category_id=c.category_id GROUP BY c.category_name ORDER BY revenue DESC`, viz:'bar', w:460, h:260 },
@@ -1915,8 +2668,8 @@ const PRESET_KPIS = [
   { id:'k4', name:'Avg Order Value', sql:`SELECT ROUND(AVG(t),0) AS value FROM (SELECT SUM(od.unit_price*od.quantity*(1-od.discount)) AS t FROM orders o JOIN order_details od ON o.order_id=od.order_id GROUP BY o.order_id) x`, prefix:'$' },
 ]
 
-type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi',w:number,h:number,color?:string,rows?:any[],fields?:string[]}
-type DashPage = {id:string,name:string,views:DashView[]}
+type DashView = {id:string,name:string,sql:string,viz:'bar'|'line'|'stacked'|'table'|'kpi',w:number,h:number,color?:string,gx?:number,gy?:number,gw?:number,gh?:number,shared?:boolean,rows?:any[],fields?:string[],builder?:{mode?:'visual'|'sql',xCol?:string,yCol?:string,agg?:'SUM'|'COUNT'|'AVG'|'MIN'|'MAX',limit?:number}}
+type DashPage = {id:string,name:string,shared?:boolean,createdBy?:string,views:DashView[]}
 
 // ── Shared chart renderer ─────────────────────────────────────────────────────
 function ViewChart({viz,rows,fields,color=C.accent,height=200}:{viz:string,rows:any[],fields:string[],color?:string,height?:number}) {
@@ -2073,9 +2826,9 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
   const tableScale=Math.max(0.8,Math.min(1.6,w/440))
 
   return(
-    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',width:w===9999?'100%':w,flexShrink:0,boxSizing:'border-box'}}>
+    <div style={{position:'relative',display:'flex',flexDirection:'column',background:'#fff',borderRadius:20,border:`1px solid ${C.cardBorder}`,boxShadow:'0 16px 36px rgba(10,35,28,0.06)',width:w===9999?'100%':w,flexShrink:0,boxSizing:'border-box',overflow:'hidden'}}>
       {/* Header */}
-      <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:C.tableHead,borderRadius:'10px 10px 0 0',flexShrink:0}}>
+      <div style={{padding:'12px 16px',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',gap:8,background:'#F7FBF8',flexShrink:0}}>
         <span style={{fontSize:12.5,fontWeight:600,color:C.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{view.name}</span>
         <div style={{position:'relative'}}>
           <button onClick={e=>{e.stopPropagation();setMenuOpen(s=>!s)}}
@@ -2084,7 +2837,7 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
           {menuOpen&&(
             <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',background:'#fff',border:`1px solid ${C.cardBorder}`,borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:300,minWidth:148,overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
               <button onClick={()=>{onEdit();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
-                onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'} onMouseOut={e=>e.currentTarget.style.background='none'}>✏️ Edit visual</button>
+                onMouseOver={e=>{e.currentTarget.style.background='#FFFFFF'; e.currentTarget.style.borderColor=C.cardBorder; e.currentTarget.style.boxShadow='0 10px 24px rgba(10,35,28,0.05)'}} onMouseOut={e=>e.currentTarget.style.background='none'}>✏️ Edit visual</button>
               <div style={{height:1,background:C.cardBorder}}/>
               <button onClick={()=>{onRemove();setMenuOpen(false)}} style={{display:'block',width:'100%',padding:'9px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}
                 onMouseOver={e=>e.currentTarget.style.background='#FEF2F2'} onMouseOut={e=>e.currentTarget.style.background='none'}>🗑 Remove</button>
@@ -2143,15 +2896,15 @@ function DashCard({view,onRemove,onEdit}:{view:DashView,onRemove:()=>void,onEdit
 
 // ── Visual Builder Modal ──────────────────────────────────────────────────────
 // Fully click-based. No drag. Simple and reliable.
-function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void,onClose:()=>void,existing?:DashView|null}) {
+function VisualBuilder({onSave,onClose,existing=null,tables=TABLES}:{onSave:(v:DashView)=>void,onClose:()=>void,existing?:DashView|null,tables?:any[]}) {
   // mode: 'visual' = click fields | 'sql' = paste SQL
-  const [mode,setMode]=useState<'visual'|'sql'>(existing?'sql':'visual')
+  const [mode,setMode]=useState<'visual'|'sql'>(existing?.builder?.mode || (existing?'sql':'visual'))
   const [name,setName]=useState(existing?.name||'')
   const [viz,setViz]=useState<DashView['viz']>(existing?.viz||'bar')
-  const [xCol,setXCol]=useState<string>('')   // "table.col"
-  const [yCol,setYCol]=useState<string>('')
-  const [agg,setAgg]=useState<'SUM'|'COUNT'|'AVG'|'MIN'|'MAX'>('SUM')
-  const [limit,setLimit]=useState(50)
+  const [xCol,setXCol]=useState<string>(existing?.builder?.xCol||'')   // "table.col"
+  const [yCol,setYCol]=useState<string>(existing?.builder?.yCol||'')
+  const [agg,setAgg]=useState<'SUM'|'COUNT'|'AVG'|'MIN'|'MAX'>(existing?.builder?.agg||'SUM')
+  const [limit,setLimit]=useState(existing?.builder?.limit||50)
   const [customSQL,setCustomSQL]=useState(existing?.sql||'')
   const [colSearch,setColSearch]=useState('')
   // preview
@@ -2161,29 +2914,36 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
   const [previewErr,setPreviewErr]=useState('')
   const previewTimer=useRef<any>(null)
 
-  const filteredCols=useMemo(()=>ALL_COLS.filter(c=>!colSearch||c.n.toLowerCase().includes(colSearch.toLowerCase())||c.table.toLowerCase().includes(colSearch.toLowerCase())),[colSearch])
+  const allCols=useMemo(()=>tables.flatMap((t:any)=> (t.columns||[]).map((c:any)=>({...c,table:t.name,team:t.team, schema:t.schema||'public'}))),[tables])
+  const filteredCols=useMemo(()=>allCols.filter((c:any)=>!colSearch||c.n.toLowerCase().includes(colSearch.toLowerCase())||c.table.toLowerCase().includes(colSearch.toLowerCase())),[allCols,colSearch])
 
   // Build SQL from visual picks
   const builtSQL=useMemo(()=>{
     if(mode==='sql'||!xCol)return ''
     const [xTable,xField]=xCol.split('.')
-    const primary=xTable
-    let selectLine=''
+    const xMeta=(tables||TABLES).find((t:any)=>t.name===xTable)
+    const q=(tableName:string)=>{
+      const meta=(tables||TABLES).find((t:any)=>t.name===tableName)
+      return meta?.schema && meta.schema !== 'public' ? `${meta.schema}.${meta.name}` : tableName
+    }
+    const primary=q(xTable)
+    const xExpr=`${primary}.${xField}`
     if(yCol){
-      const [,yField]=yCol.split('.')
-      const [yTable]=yCol.split('.')
+      const [yTable,yField]=yCol.split('.')
+      const yPrimary=q(yTable)
+      const yExpr=`${yPrimary}.${yField}`
       const needJoin=yTable!==xTable
-      const joinDef=needJoin?TABLES.find(t=>t.name===xTable)?.joins.find(j=>j.to===yTable):null
-      const joinSQL=needJoin&&joinDef?`\nJOIN ${yTable} ON ${xTable}.${joinDef.on} = ${yTable}.${joinDef.on}`:needJoin?`\nJOIN ${yTable} ON true -- verify`:''
+      const joinDef=needJoin?xMeta?.joins?.find((j:any)=>j.to===yTable):null
+      const joinSQL=needJoin&&joinDef?`\nJOIN ${yPrimary} ON ${primary}.${joinDef.on} = ${yPrimary}.${joinDef.on}`:''
+      if(needJoin&&!joinDef) return ''
       if(viz==='kpi'){
-        return `SELECT ${agg}(${yCol.replace('.','.') }) AS value\nFROM ${primary}${joinSQL}`
+        return `SELECT ${agg}(${yExpr}) AS value\nFROM ${primary}${joinSQL}`
       }
-      selectLine=`${xCol},\n  ${agg}(${yCol}) AS ${agg.toLowerCase()}_${yField}`
-      return `SELECT\n  ${selectLine}\nFROM ${primary}${joinSQL}\nGROUP BY ${xCol}\nORDER BY 2 DESC\nLIMIT ${limit}`
+      return `SELECT\n  ${xExpr} AS ${xField},\n  ${agg}(${yExpr}) AS ${agg.toLowerCase()}_${yField}\nFROM ${primary}${joinSQL}\nGROUP BY ${xExpr}\nORDER BY 2 DESC\nLIMIT ${limit}`
     }
     if(viz==='kpi') return `SELECT COUNT(*) AS value FROM ${primary}`
-    return `SELECT\n  ${xCol},\n  COUNT(*) AS count\nFROM ${primary}\nGROUP BY ${xCol}\nORDER BY 2 DESC\nLIMIT ${limit}`
-  },[mode,xCol,yCol,agg,limit,viz])
+    return `SELECT\n  ${xExpr} AS ${xField},\n  COUNT(*) AS count\nFROM ${primary}\nGROUP BY ${xExpr}\nORDER BY 2 DESC\nLIMIT ${limit}`
+  },[mode,xCol,yCol,agg,limit,viz,tables])
 
   const activeSQL=mode==='sql'?customSQL:builtSQL
 
@@ -2217,13 +2977,20 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
       h:existing?.h||240,
       rows:previewRows,
       fields:previewFields,
+      builder:{
+        mode,
+        xCol,
+        yCol,
+        agg,
+        limit,
+      },
     })
     onClose()
   }
 
   const VIZ_TYPES:[DashView['viz'],string][]=[['bar','Bar'],['line','Line'],['stacked','Stacked Bar'],['table','Table'],['kpi','KPI']]
 
-  const ColButton=({col}:{col:typeof ALL_COLS[0]})=>{
+  const ColButton=({col}:{col:any})=>{
     const key=`${col.table}.${col.n}`
     const isX=xCol===key, isY=yCol===key
     return(
@@ -2281,7 +3048,7 @@ function VisualBuilder({onSave,onClose,existing=null}:{onSave:(v:DashView)=>void
                   style={{width:'100%',padding:'4px 8px',borderRadius:5,border:`1px solid ${C.cardBorder}`,fontSize:12,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}/>
               </div>
               <div style={{flex:1,overflowY:'auto',padding:'6px 8px'}}>
-                {TABLES.map(tbl=>{
+                {tables.map((tbl:any)=>{
                   const cols=filteredCols.filter(c=>c.table===tbl.name)
                   if(!cols.length)return null
                   return(
@@ -2395,134 +3162,216 @@ function PresetCard({preset,onEdit,fullWidth=false}:{preset:any,onEdit:()=>void,
 
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
-function DashboardTab({sharedResults,onResultSaved}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void}) {
+
+
+function DashboardTab({sharedResults,onResultSaved,isDemo,tables=TABLES}:{sharedResults:Record<string,ReportResult>,onResultSaved:(id:string,r:ReportResult)=>void,isDemo:boolean,tables?:any[]}) {
   const [pages,setPages]=useState<DashPage[]>([{id:'overview',name:'Overview',views:[]}])
   const [activePage,setActivePage]=useState('overview')
   const [renamingPage,setRenamingPage]=useState<string|null>(null)
   const [builder,setBuilder]=useState<{open:boolean,editing:DashView|null}>({open:false,editing:null})
   const [customViews,setCustomViews]=useState<DashView[]>([])
   const [showAlerts,setShowAlerts]=useState(false)
+  const [dashLoading,setDashLoading]=useState(false)
+  const [dashSaving,setDashSaving]=useState(false)
+  const [dashUnsaved,setDashUnsaved]=useState(false)
+  const [aiPrompt,setAiPrompt]=useState('')
+  const [aiGenerating,setAiGenerating]=useState(false)
+  const [dashError,setDashError]=useState('')
+  const [draggingId,setDraggingId]=useState<string|null>(null)
 
   const isOverview=activePage==='overview'&&!showAlerts
+
+  useEffect(()=>{
+    setDashLoading(true)
+    fetch('/api/dashboard').then(r=>r.ok?r.json():null).then(d=>{
+      if(!d) return
+      setCustomViews(Array.isArray(d.customViews)?d.customViews:[])
+      if(Array.isArray(d.pages)&&d.pages.length>0){
+        const realPages=d.pages.filter((p:any)=>p.id!=='overview')
+        setPages([{id:'overview',name:'Overview',views:[]}, ...realPages])
+      }
+    }).catch(()=>{}).finally(()=>setDashLoading(false))
+  },[])
+
+  const saveDashboard=async()=>{
+    setDashSaving(true)
+    setDashError('')
+    try{
+      const res=await fetch('/api/dashboard',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({customViews,pages:pages.filter((p:any)=>p.id!=='overview')})})
+      const d=await res.json().catch(()=>null)
+      if(!res.ok) throw new Error(d?.error || 'Failed to save dashboard')
+      setDashUnsaved(false)
+    }catch(e:any){
+      setDashError(e?.message || 'Failed to save dashboard')
+    }finally{setDashSaving(false)}
+  }
+
   const currentPage=pages.find(p=>p.id===activePage)||pages[0]
   const currentViews=isOverview?customViews:currentPage.views
 
+  const setCurrentViews = (updater:(views:DashView[])=>DashView[])=>{
+    if(isOverview) setCustomViews(prev=>updater(prev))
+    else setPages(prev=>prev.map(pg=>pg.id===activePage?{...pg,views:updater(pg.views)}:pg))
+    setDashUnsaved(true)
+  }
+
+  const moveView = (fromId:string, toId:string)=>{
+    if(fromId===toId) return
+    setCurrentViews(prev=>{
+      const arr=[...prev]
+      const fromIndex=arr.findIndex(v=>v.id===fromId)
+      const toIndex=arr.findIndex(v=>v.id===toId)
+      if(fromIndex<0||toIndex<0) return prev
+      const [moved]=arr.splice(fromIndex,1)
+      arr.splice(toIndex,0,moved)
+      return arr
+    })
+  }
+
+  const inferVizFromPrompt=(prompt:string):DashView['viz']=>{
+    const p=prompt.toLowerCase()
+    if(p.includes('line')) return 'line'
+    if(p.includes('table')) return 'table'
+    if(p.includes('kpi') || p.includes('single number') || p.includes('total ')) return 'kpi'
+    if(p.includes('stacked')) return 'stacked'
+    return 'bar'
+  }
+
+  const generateAiCard=async()=>{
+    const q=aiPrompt.trim()
+    if(!q || aiGenerating) return
+    setAiGenerating(true)
+    setDashError('')
+    try{
+      const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      const d=await res.json().catch(()=>null)
+      if(!res.ok || d?.error) throw new Error(d?.error || 'Failed to generate visual')
+      const view:DashView={id:`v${Date.now()}`,name:q.length>42?q.slice(0,42)+'…':q,sql:d.sql||'',viz:inferVizFromPrompt(q),w:460,h:260,rows:(d.rows||[]).slice(0,500),fields:d.fields||[]}
+      setCurrentViews(prev=>[view,...prev]); setAiPrompt('')
+    }catch(e:any){ setDashError(e?.message || 'Failed to generate visual') }
+    finally{ setAiGenerating(false) }
+  }
+
   const openBuilder=(existing:DashView|null=null)=>setBuilder({open:true,editing:existing})
   const closeBuilder=()=>setBuilder({open:false,editing:null})
+  const saveView=(view:DashView)=>{ if(builder.editing) setCurrentViews(prev=>prev.map(v=>v.id===view.id?view:v)); else setCurrentViews(prev=>[...prev,view]) }
+  const removeView=(id:string)=> setCurrentViews(prev=>prev.filter(v=>v.id!==id))
+  const addPage=()=>{ const id=`p${Date.now()}`; const name=`Page ${pages.length}`; setPages(p=>[...p,{id,name,views:[]}]); setActivePage(id); setDashUnsaved(true) }
+  const deletePage=(id:string)=>{ setPages(p=>p.filter(pg=>pg.id!==id)); if(activePage===id)setActivePage('overview'); setDashUnsaved(true) }
+  const renamePage=(id:string,name:string)=>{ setPages(p=>p.map(pg=>pg.id===id?{...pg,name}:pg)); setRenamingPage(null); setDashUnsaved(true) }
 
-  const saveView=(view:DashView)=>{
-    if(builder.editing){
-      // update existing
-      if(isOverview) setCustomViews(p=>p.map(v=>v.id===view.id?view:v))
-      else setPages(p=>p.map(pg=>pg.id===activePage?{...pg,views:pg.views.map(v=>v.id===view.id?view:v)}:pg))
-    } else {
-      // add new
-      if(isOverview) setCustomViews(p=>[...p,view])
-      else setPages(p=>p.map(pg=>pg.id===activePage?{...pg,views:[...pg.views,view]}:pg))
-    }
-  }
-
-  const removeView=(id:string)=>{
-    if(isOverview) setCustomViews(p=>p.filter(v=>v.id!==id))
-    else setPages(p=>p.map(pg=>pg.id===activePage?{...pg,views:pg.views.filter(v=>v.id!==id)}:pg))
-  }
-
-  const addPage=()=>{
-    const id=`p${Date.now()}`
-    const name=`Page ${pages.length}`
-    setPages(p=>[...p,{id,name,views:[]}])
-    setActivePage(id)
-  }
-
-  const deletePage=(id:string)=>{
-    setPages(p=>p.filter(pg=>pg.id!==id))
-    if(activePage===id)setActivePage('overview')
-  }
-
-  const renamePage=(id:string,name:string)=>{
-    setPages(p=>p.map(pg=>pg.id===id?{...pg,name}:pg))
-    setRenamingPage(null)
-  }
+  const renderViewList=(views:DashView[])=>(
+    <div style={{display:'flex',flexWrap:'wrap',gap:16}}>
+      {views.map(v=>(
+        <div key={v.id} draggable onDragStart={()=>setDraggingId(v.id)} onDragEnd={()=>setDraggingId(null)} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault(); if(draggingId) moveView(draggingId, v.id); setDraggingId(null)}}
+          style={{opacity:draggingId===v.id?0.55:1, transition:'opacity .15s'}}>
+          <DashCard view={v} onRemove={()=>removeView(v.id)} onEdit={()=>openBuilder(v)}/>
+        </div>
+      ))}
+    </div>
+  )
 
   return(
     <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:C.bg}}>
-      {/* Tab bar */}
-      <div style={{background:'#fff',borderBottom:`1px solid ${C.cardBorder}`,display:'flex',alignItems:'center',padding:'0 16px',flexShrink:0,overflowX:'auto'}}>
-        {pages.map(pg=>(
-          <div key={pg.id} style={{display:'flex',alignItems:'center',flexShrink:0,borderBottom:`2px solid ${activePage===pg.id?C.accent:'transparent'}`,marginRight:2}}>
-            <div onClick={()=>setActivePage(pg.id)}
-              style={{padding:'11px 10px',cursor:'pointer',fontSize:13,fontWeight:activePage===pg.id?600:400,color:activePage===pg.id?C.accent:C.textMuted,whiteSpace:'nowrap'}}>
-              {renamingPage===pg.id
-                ?<input autoFocus defaultValue={pg.name}
-                    onBlur={e=>renamePage(pg.id,e.target.value||pg.name)}
-                    onKeyDown={e=>{if(e.key==='Enter')renamePage(pg.id,(e.target as HTMLInputElement).value||pg.name);if(e.key==='Escape')setRenamingPage(null)}}
-                    onClick={e=>e.stopPropagation()}
-                    style={{fontSize:13,border:'none',borderBottom:`1px solid ${C.accent}`,outline:'none',width:80,fontFamily:'Inter,sans-serif',background:'none',color:C.text}}/>
-                :<span onDoubleClick={e=>{e.stopPropagation();if(pg.id!=='overview')setRenamingPage(pg.id)}}>{pg.name}</span>}
-            </div>
-            {pg.id!=='overview'&&activePage===pg.id&&(
-              <button onClick={e=>{e.stopPropagation();deletePage(pg.id)}} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:13,padding:'0 4px',lineHeight:1}}
-                onMouseOver={e=>e.currentTarget.style.color=C.danger} onMouseOut={e=>e.currentTarget.style.color=C.textLight}>×</button>
-            )}
-          </div>
-        ))}
-        <button onClick={addPage} style={{padding:'10px 12px',fontSize:13,color:C.textLight,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',flexShrink:0,whiteSpace:'nowrap'}}>+ Page</button>
-        {/* Alerts tab */}
-        <div style={{borderBottom:`2px solid ${showAlerts?C.danger:'transparent'}`,marginRight:2}}>
-          <button onClick={()=>{setShowAlerts(s=>!s);setActivePage('overview')}}
-            style={{padding:'11px 10px',cursor:'pointer',fontSize:13,fontWeight:showAlerts?600:400,color:showAlerts?C.danger:C.textMuted,background:'none',border:'none',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:5}}>
-            🔔 Alerts
-          </button>
+      <div style={{padding:'22px 24px 0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,flexWrap:'wrap'}}>
+        <div>
+          <div className="sectionTitle" style={{marginBottom:6}}>Dashboards</div>
+          <div style={{fontSize:14,color:C.textMuted,lineHeight:1.7}}>Turn useful answers into saved views your team can come back to.</div>
         </div>
-        <div style={{marginLeft:'auto',paddingLeft:12,flexShrink:0}}>
-          <button onClick={()=>openBuilder(null)} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600,whiteSpace:'nowrap'}}>+ Add visual</button>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          {dashUnsaved&&<button onClick={saveDashboard} disabled={dashSaving} style={{fontSize:12.5,padding:'10px 16px',borderRadius:12,border:`1px solid ${C.accent}`,background:'#fff',color:C.accent,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:700,whiteSpace:'nowrap',opacity:dashSaving?0.6:1}}>{dashSaving?'Saving…':'Save layout'}</button>}
+          <button onClick={()=>openBuilder(null)} style={{fontSize:13,padding:'12px 18px',borderRadius:14,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:700,whiteSpace:'nowrap'}}>+ Add visual</button>
         </div>
       </div>
 
-      {/* Canvas */}
-      <div style={{flex:1,overflowY:'auto',padding:20}}>
-        {showAlerts&&<AlertsTab/>}
-        {!showAlerts&&isOverview&&(
-          <>
-            <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
-              {PRESET_KPIS.map(kpi=><KpiCard key={kpi.id} kpi={kpi}/>)}
-            </div>
-            <div style={{display:'flex',flexWrap:'wrap',gap:14,marginBottom:14}}>
-              {PRESET_QUERIES.slice(0,3).map(p=>(
-                <PresetCard key={p.id} preset={p} onEdit={()=>openBuilder({id:p.id,name:p.name,sql:p.sql,viz:p.viz as any,w:p.w,h:p.h})}/>
-              ))}
-            </div>
-            {/* Stacked bar — full width */}
-            <div style={{marginBottom:customViews.length?20:0, maxWidth:1350}}>
-              <PresetCard key={PRESET_QUERIES[3].id} preset={PRESET_QUERIES[3]} onEdit={()=>openBuilder({id:PRESET_QUERIES[3].id,name:PRESET_QUERIES[3].name,sql:PRESET_QUERIES[3].sql,viz:PRESET_QUERIES[3].viz as any,w:PRESET_QUERIES[3].w,h:PRESET_QUERIES[3].h})}/>            </div>
-            {customViews.length>0&&(
-              <div>
-                <div style={{fontSize:11,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:12}}>Custom visuals</div>
-                <div style={{display:'flex',flexWrap:'wrap',gap:14}}>
-                  {customViews.map(v=><DashCard key={v.id} view={v} onRemove={()=>removeView(v.id)} onEdit={()=>openBuilder(v)}/>)}
+      <div style={{padding:'16px 24px 0'}}>
+        <div className="browserShell" style={{overflow:'hidden'}}>
+          <div className="browserBar">
+            <div className="browserDots"><span></span><span></span><span></span></div>
+            <div style={{margin:'0 auto',display:'flex',gap:10,alignItems:'center'}}>
+              {pages.map(pg=>(
+                <div key={pg.id} style={{display:'flex',alignItems:'center'}}>
+                  <div onClick={()=>{setActivePage(pg.id);setShowAlerts(false)}} style={{padding:'8px 14px',cursor:'pointer',fontSize:13,fontWeight:700,color:activePage===pg.id?C.navBg:C.textMuted,background:activePage===pg.id?'#FFFFFF':'transparent',border:`1px solid ${activePage===pg.id?C.cardBorder:'transparent'}`,borderRadius:12,whiteSpace:'nowrap'}}>
+                    {renamingPage===pg.id
+                      ?<input autoFocus defaultValue={pg.name} onBlur={e=>renamePage(pg.id,e.target.value||pg.name)}
+                          onKeyDown={e=>{if(e.key==='Enter')renamePage(pg.id,(e.target as HTMLInputElement).value||pg.name);if(e.key==='Escape')setRenamingPage(null)}}
+                          onClick={e=>e.stopPropagation()}
+                          style={{fontSize:13,border:'none',outline:'none',width:80,fontFamily:'Inter,sans-serif',background:'none',color:C.text}}/>
+                      :<span onDoubleClick={e=>{e.stopPropagation();if(pg.id!=='overview')setRenamingPage(pg.id)}}>{pg.name}</span>}
+                  </div>
+                  {pg.id!=='overview'&&activePage===pg.id&&<button onClick={e=>{e.stopPropagation();deletePage(pg.id)}} style={{background:'none',border:'none',color:C.textLight,cursor:'pointer',fontSize:14,padding:'0 4px',lineHeight:1}}>×</button>}
                 </div>
+              ))}
+              <button onClick={addPage} style={{padding:'8px 14px',fontSize:13,color:C.textMuted,background:'transparent',border:`1px solid ${C.cardBorder}`,borderRadius:12,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>+ Page</button>
+              <button onClick={()=>{setShowAlerts(s=>!s);setActivePage('overview')}} style={{padding:'8px 14px',fontSize:13,fontWeight:700,color:showAlerts?C.danger:C.textMuted,background:showAlerts?'#FEF2F2':'transparent',border:`1px solid ${showAlerts?'#FECACA':C.cardBorder}`,borderRadius:12,cursor:'pointer',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>Alerts</button>
+            </div>
+          </div>
+
+          <div style={{padding:'18px 18px 0', background:'#FBFDFC'}}>
+            {!showAlerts&&(
+              <div className="landingCard" style={{padding:'14px 16px',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.06em'}}>AI card builder</div>
+                <input value={aiPrompt} onChange={e=>setAiPrompt(e.target.value)} onKeyDown={e=>{if(e.key==='Enter') generateAiCard()}} placeholder="monthly revenue by practice area"
+                  style={{flex:'1 1 340px',minWidth:260,padding:'11px 12px',borderRadius:12,border:`1px solid ${C.cardBorder}`,fontSize:13.5,color:C.text,fontFamily:'Inter,sans-serif',background:'#fff'}}/>
+                <button onClick={generateAiCard} disabled={!aiPrompt.trim() || aiGenerating}
+                  style={{padding:'11px 16px',borderRadius:12,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,fontWeight:700,opacity:(!aiPrompt.trim() || aiGenerating)?0.55:1}}>
+                  {aiGenerating?'Generating…':'Generate card'}
+                </button>
+                <button onClick={()=>openBuilder(null)} style={{padding:'11px 14px',borderRadius:12,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:13,fontWeight:700}}>
+                  Advanced
+                </button>
               </div>
             )}
-          </>
-        )}
-        {!showAlerts&&!isOverview&&(
-          currentViews.length===0
-            ?<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',paddingTop:80,textAlign:'center'}}>
-              <div style={{fontSize:44,marginBottom:16}}>📊</div>
-              <div style={{fontSize:15,fontWeight:600,color:C.text,marginBottom:8}}>Empty page</div>
-              <div style={{fontSize:13,color:C.textMuted,marginBottom:24}}>Double-click the tab to rename · Click "Add visual" to get started</div>
-              <button onClick={()=>openBuilder(null)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Add visual</button>
+            {!!dashError && <div style={{marginBottom:12,padding:'10px 12px',borderRadius:12,background:'#FEF2F2',border:'1px solid #FECACA',color:C.danger,fontSize:12.5,lineHeight:1.5}}>{dashError}</div>}
+
+            <div style={{padding:'6px 2px 20px',minHeight:540}}>
+              {showAlerts&&<AlertsTab isDemo={isDemo}/>}
+              {!showAlerts&&isOverview&&(
+                <>
+                  {isDemo&&(
+                    <>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(180px,1fr))',gap:14,marginBottom:18}}>
+                        <LandingKpi label="Revenue" value="$284k" highlight />
+                        <LandingKpi label="Invoices" value="148" />
+                        <LandingKpi label="Alerts" value="9" />
+                      </div>
+                      <div className="landingCard" style={{padding:'16px 16px 10px',marginBottom:18}}>
+                        <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10}}>Monthly revenue</div>
+                        <div style={{display:'flex',alignItems:'end',gap:12,height:170}}>
+                          {[42,54,61,68,82,74,90].map((h,i)=><div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'end',gap:8}}><div style={{width:'100%',height:`${h}%`,background:i===6?C.accent:'#CFE7D8',borderRadius:'12px 12px 4px 4px'}}/><div style={{fontSize:11,color:C.textLight}}>{['J','F','M','A','M','J','J'][i]}</div></div>)}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {!isDemo&&customViews.length===0&&!dashLoading&&(
+                    <div className="landingCard" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'70px 24px',textAlign:'center'}}>
+                      <div style={{fontSize:18,fontWeight:800,color:C.navBg,marginBottom:8}}>No visuals yet</div>
+                      <div style={{fontSize:14,color:C.textMuted,lineHeight:1.7,maxWidth:420,marginBottom:22}}>Start with the AI builder above or click Advanced to build a dashboard visual manually.</div>
+                      <button onClick={generateAiCard} disabled={!aiPrompt.trim() || aiGenerating} style={{background:C.accent,color:'#fff',border:'none',borderRadius:14,padding:'12px 22px',fontSize:13.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif',opacity:(!aiPrompt.trim() || aiGenerating)?0.55:1}}>{aiGenerating?'Generating…':'Generate first visual'}</button>
+                    </div>
+                  )}
+                  {customViews.length>0&&<div>{renderViewList(customViews)}</div>}
+                </>
+              )}
+              {!showAlerts&&!isOverview&&(currentViews.length===0
+                ?<div className="landingCard" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'70px 24px',textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:C.navBg,marginBottom:8}}>Empty page</div>
+                  <div style={{fontSize:14,color:C.textMuted,marginBottom:20}}>Add a visual to start building this dashboard page.</div>
+                  <button onClick={()=>openBuilder(null)} style={{background:C.accent,color:'#fff',border:'none',borderRadius:14,padding:'12px 22px',fontSize:13.5,fontWeight:700,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>Add visual</button>
+                </div>
+                :renderViewList(currentViews))}
             </div>
-            :<div style={{display:'flex',flexWrap:'wrap',gap:14}}>
-              {currentViews.map(v=><DashCard key={v.id} view={v} onRemove={()=>removeView(v.id)} onEdit={()=>openBuilder(v)}/>)}
-            </div>
-        )}
+          </div>
+        </div>
       </div>
 
-      {builder.open&&<VisualBuilder onSave={saveView} onClose={closeBuilder} existing={builder.editing}/>}
+      {builder.open&&<VisualBuilder onSave={saveView} onClose={closeBuilder} existing={builder.editing} tables={tables}/>}
     </div>
   )
 }
+
+
 
 // ── Tutorial Overlay ──────────────────────────────────────────────────────────
 // ── Tutorial Overlay ──────────────────────────────────────────────────────────
@@ -2596,7 +3445,7 @@ function TourOverlay({onFinish,onTabSwitch}:{onFinish:()=>void,onTabSwitch:(tab:
 
 
 
-// ── Table Grid View (Airtable-style) ─────────────────────────────────────────
+// ── Table Grid View (// ── Table Grid View (Airtable-style) ─────────────────────────────────────────
 const IS_ADMIN = true // TODO: wire to real auth role
 
 type GridMsg = {id:string,role:'user'|'assistant',text:string,loading?:boolean,tableData?:{rows:any[],fields:string[]},followUps?:string[]}
@@ -2627,10 +3476,19 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
   const inputRef=useRef<HTMLInputElement>(null)
 
   useEffect(()=>{
-    fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customSQL:`SELECT * FROM ${table.name} LIMIT 500`})})
-      .then(r=>r.json()).then(d=>{if(d.error)setErr(d.error);else{setRows(d.rows||[]);setFields(d.fields||[])}})
-      .catch(e=>setErr(e.message)).finally(()=>setLoading(false))
-  },[table.name])
+    const qualifiedTable = table?.schema && table.schema !== 'public'
+      ? `${table.schema}.${table.name}`
+      : table.name
+    fetch('/api/query',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({customSQL:`SELECT * FROM ${qualifiedTable} LIMIT 500`})
+    })
+      .then(r=>r.json())
+      .then(d=>{if(d.error)setErr(d.error);else{setRows(d.rows||[]);setFields(d.fields||[])}})
+      .catch(e=>setErr(e.message))
+      .finally(()=>setLoading(false))
+  },[table.name, table.schema])
 
   useEffect(()=>{if(editCell)setTimeout(()=>inputRef.current?.focus(),50)},[editCell])
   useEffect(()=>{const close=()=>setRowContextMenu(null);if(rowContextMenu)document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[rowContextMenu])
@@ -2684,98 +3542,6 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
       {id:`m${Date.now()}t`,role:'assistant',text:'',loading:true}
     ])
     setChatLoading(true)
-
-    // Helper: skip fields that are meaningless as metrics (IDs, sequential indices)
-    const isIdField=(f:string)=>{
-      if(/_id$/i.test(f)||/^id$/i.test(f)) return true
-      // Detect sequential 1,2,3...N pattern
-      const vals=rows.map(r=>Number(r[f])).filter(n=>!isNaN(n)&&Number.isInteger(n))
-      if(vals.length<3) return false
-      const sorted=[...vals].sort((a,b)=>a-b)
-      return sorted[0]>=1&&sorted[sorted.length-1]===vals.length&&
-        sorted.every((n,i)=>i===0||n===sorted[i-1]+1)
-    }
-    // Helper: format values for human-readable output
-    const fmtVal=(v:any):string=>{
-      if(typeof v==='string'&&/^\d{4}-\d{2}-\d{2}T/.test(v))
-        return new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
-      if(typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)) return Number(v).toLocaleString()
-      return String(v??'')
-    }
-    const looksNumeric=(v:any)=>typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)
-    // Helper: pick best numeric field — prefer high-variance fields (real metrics) over FK enums (ship_via=1,2,3)
-    const bestNumField=(flds:string[])=>{
-      const candidates=flds.filter(f=>
-        !isIdField(f)&&!f.toLowerCase().includes('date')&&!f.toLowerCase().includes('time')&&
-        rows.length>0&&looksNumeric(rows[0][f])
-      )
-      // Sort by number of distinct values descending (more distinct = better real metric)
-      return candidates.sort((a,b)=>{
-        const da=new Set(rows.map(r=>r[a])).size
-        const db=new Set(rows.map(r=>r[b])).size
-        return db-da
-      })[0]
-    }
-    // Helper: pick best label field — must be a non-numeric string (e.g. city, company name)
-    const bestLabelField=(flds:string[],numF:string|undefined)=>flds.find(f=>
-      f!==numF&&!isIdField(f)&&!f.toLowerCase().includes('date')&&!f.toLowerCase().includes('time')&&
-      rows.length>0&&typeof rows[0][f]==='string'&&!looksNumeric(rows[0][f])
-    )
-
-    // Detect meta/insight OR summary questions that should use loaded data, not SQL
-    const isMetaQ=/notable|recommend|metrics|what (else|other)|suggest|insights?|interesting|standout|highlight|summary|summarize|overview|describe this/i.test(q)
-    if(isMetaQ){
-      const numF=bestNumField(fields)
-      const labelF=bestLabelField(fields,numF)
-      const insights:string[]=[]
-
-      if(/summary|summarize|overview|describe/i.test(q)){
-        // Table summary: count, date range, top values
-        const dateF=fields.find(f=>f.toLowerCase().includes('date'))
-        const strFs=fields.filter(f=>!isIdField(f)&&rows.length>0&&typeof rows[0][f]==='string'&&!looksNumeric(rows[0][f])&&!f.toLowerCase().includes('date'))
-        insights.push(`The ${table.name} table has ${rows.length} rows loaded across ${fields.length} columns.`)
-        if(dateF){
-          const dates=rows.map(r=>r[dateF]).filter(Boolean).sort()
-          if(dates.length) insights.push(`Records span from ${fmtVal(dates[0])} to ${fmtVal(dates[dates.length-1])}.`)
-        }
-        if(numF&&rows.length>1){
-          const vals=rows.map(r=>Number(r[numF])).filter(n=>!isNaN(n))
-          const avg=vals.reduce((s,n)=>s+n,0)/vals.length
-          const mx=Math.max(...vals), mn=Math.min(...vals)
-          insights.push(`${numF.replace(/_/g,' ')} ranges from ${mn.toLocaleString()} to ${mx.toLocaleString()}, averaging ${avg.toFixed(2)}.`)
-        }
-        if(strFs.length){
-          const f=strFs[0]
-          const counts:Record<string,number>={};rows.forEach(r=>{const v=String(r[f]||'');counts[v]=(counts[v]||0)+1})
-          const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,3)
-          if(top.length) insights.push(`Most common ${f.replace(/_/g,' ')}: ${top.map(([k,n])=>`${k} (${n})`).join(', ')}.`)
-        }
-      } else {
-        // Recommend metrics
-        if(numF&&labelF&&rows.length>1){
-          const sorted=[...rows].sort((a,b)=>Number(b[numF])-Number(a[numF]))
-          const top=sorted[0], second=sorted[1], bot=sorted[sorted.length-1]
-          const avg=rows.reduce((s,r)=>s+Number(r[numF]||0),0)/rows.length
-          insights.push(`${fmtVal(top[labelF])} has the highest ${numF.replace(/_/g,' ')} at ${fmtVal(top[numF])}${second?`, followed by ${fmtVal(second[labelF])} at ${fmtVal(second[numF])}`  :''}.`)
-          if(bot[labelF]!==top[labelF]) insights.push(`${fmtVal(bot[labelF])} is the lowest at ${fmtVal(bot[numF])}.`)
-          insights.push(`Average ${numF.replace(/_/g,' ')} is ${avg.toFixed(2)}. You might also look at: breakdown by city or country, orders over time, or freight cost by shipper.`)
-        } else {
-          const meaningfulFields=fields.filter(f=>!isIdField(f))
-          insights.push(`This table has ${rows.length} rows. Key fields to explore: ${meaningfulFields.join(', ')}.`)
-          insights.push(`Try asking: "What are the top 10 by value?", "What is the date range?", or "What city appears most often?".`)
-        }
-      }
-
-      setChatMsgs(p=>p.filter(m=>!m.loading).concat({
-        id:`m${Date.now()}a`,role:'assistant',
-        text:insights.join(' '),
-        followUps:numF?[`What are the top 5 by ${numF.replace(/_/g,' ')}?`,`What is the average ${numF.replace(/_/g,' ')}?`,'Show the date range']
-          :['What are the top 10?','Show me distinct values','Show the date range']
-      }))
-      setChatLoading(false)
-      return
-    }
-
     try{
       // Always run the query first to get real data
       const qRes=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2836,41 +3602,21 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
           narrative=vals[0] as string
         }
       }
-      // Fallback: build a human-friendly sentence from the actual data
+      // Fallback: build a clear sentence from the actual data ourselves
       if(!narrative){
-        const isIdF=(f:string)=>/_id$/i.test(f)||/^id$/i.test(f)
-        const fmt=(v:any)=>{
-          if(typeof v==='string'&&/^\d{4}-\d{2}-\d{2}T/.test(v))
-            return new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
-          if(typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)) return Number(v).toLocaleString()
-          return String(v??'')
-        }
-        const looksNum=(v:any)=>typeof v==='number'||String(v).match(/^\d+(\.\d+)?$/)
-        // Pick best numeric field: most distinct values wins (avoids FK enums like ship_via=1,2,3)
-        const numCandidates=resultFields.filter(f=>!isIdF(f)&&!f.toLowerCase().includes('date')&&resultRows.length>0&&looksNum(resultRows[0][f]))
-        const numF=numCandidates.sort((a,b)=>new Set(resultRows.map(r=>r[b])).size-new Set(resultRows.map(r=>r[a])).size)[0]
-        // Pick best label field: non-numeric string
-        const labelF=resultFields.find(f=>f!==numF&&!isIdF(f)&&resultRows.length>0&&typeof resultRows[0][f]==='string'&&!looksNum(resultRows[0][f]))
-          ||resultFields.find(f=>f!==numF&&!isIdF(f)&&!f.toLowerCase().includes('date'))
         if(resultRows.length===1){
           const row=resultRows[0]
-          if(numF&&labelF&&row[labelF]!=null)
-            narrative=`${fmt(row[labelF])} has a ${numF.replace(/_/g,' ')} of ${fmt(row[numF])}.`
-          else
-            narrative=`Here's what I found: ${resultFields.filter(f=>!isIdF(f)).slice(0,3).map(f=>`${f.replace(/_/g,' ')}: ${fmt(row[f])}`).join(', ')}.`
-        } else if(numF&&labelF){
-          const top=resultRows[0], second=resultRows[1]
-          narrative=`${fmt(top[labelF])} leads with ${fmt(top[numF])} ${numF.replace(/_/g,' ')}${second?`, followed by ${fmt(second[labelF])} at ${fmt(second[numF])}`  :''}.`
+          narrative=`Based on the data: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${row[f]}`).join(', ')}.`
         } else {
-          const usableFields=resultFields.filter(f=>!isIdF(f)).slice(0,2)
-          narrative=`Top results: ${resultRows.slice(0,3).map(r=>usableFields.map(f=>fmt(r[f])).join(' — ')).join('; ')}.`
+          narrative=`I found ${resultRows.length} results. The top result: ${resultFields.map(f=>`${f.replace(/_/g,' ')} is ${resultRows[0][f]}`).join(', ')}.`
         }
       }
 
       // Generate 2-3 contextual follow-up suggestions
       const followUps:string[]=[]
       if(resultRows.length>0){
-        if(resultRows.length===1) followUps.push(`Show all ${table.name}`,`Recommend other metrics to look at`)
+        const flds=resultFields.slice(0,3).join(', ')
+        if(resultRows.length===1) followUps.push(`Show all ${table.name}`,`What else is notable here?`)
         else{
           followUps.push(`What's the average?`)
           if(resultFields.some((f:string)=>f.toLowerCase().includes('date')||f.toLowerCase().includes('month'))) followUps.push('Show the trend over time')
@@ -2973,7 +3719,7 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
                           {f.replace(/_/g,' ')}{sortField===f&&<span style={{color:C.accent}}>{sortDir==='asc'?'↑':'↓'}</span>}
                         </button>
                         <div onMouseDown={e=>startColResize(e,f)} style={{width:6,height:'100%',cursor:'col-resize',position:'absolute',right:0,top:0,zIndex:1}}
-                          onMouseOver={e=>e.currentTarget.style.background='rgba(5,150,105,0.3)'} onMouseOut={e=>e.currentTarget.style.background='transparent'}/>
+                          onMouseOver={e=>e.currentTarget.style.background='rgba(5,150,105,0.3)'} onMouseOut={e=>{e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='transparent'; e.currentTarget.style.boxShadow='none'}}/>
                       </div>
                     </th>
                   ))}
@@ -3140,6 +3886,14 @@ function TableGridView({table,onClose,dataAccess}:{table:any,onClose:()=>void,da
     </div>
   )
 }
+
+
+
+
+
+
+
+
 
 
 
@@ -3343,13 +4097,60 @@ function AddDatabaseModal({onClose}:{onClose:()=>void}) {
 }
 
 
-function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void}) {
-  const PLAN_LIMITS={queries:500,used:127,resetDate:'Apr 1, 2026'}
-  const USERS=[
-    {name:'Mo Rasul',email:'velo@demo.qwezy.io',role:'Admin',status:'Active',lastSeen:'Today',queries:89,initials:'MR'},
-    {name:'Sarah Chen',email:'sarah@velo.com',role:'Editor',status:'Active',lastSeen:'Yesterday',queries:24,initials:'SC'},
-    {name:'James Park',email:'james@velo.com',role:'Viewer',status:'Active',lastSeen:'3 days ago',queries:14,initials:'JP'},
-  ]
+function AdminPage({dataAccess,setDataAccess,onReplayTour,aiConfigured=false,tableCount=0,companyName='',dbConnected=false}:{dataAccess:boolean,setDataAccess:(v:boolean)=>void,onReplayTour:()=>void,aiConfigured?:boolean,tableCount?:number,companyName?:string,dbConnected?:boolean}) {
+  const [USERS,setUSERS]=useState<any[]>([])
+  const [usageCount,setUsageCount]=useState(0)
+  const [plan,setPlan]=useState('Starter')
+  const [refreshingUsage,setRefreshingUsage]=useState(false)
+
+  const refreshTeam = useCallback(async()=>{
+    try{
+      const d = await fetch('/api/team', { cache:'no-store' }).then(r=>r.ok?r.json():null)
+      const list=d?.users||d?.members||[]
+      setUSERS(list.map((m:any)=>({
+        name:m.name||m.email,
+        email:m.email,
+        role:m.role?.charAt(0).toUpperCase()+m.role?.slice(1)||'Viewer',
+        status:m.status==='active'?'Active':'Inactive',
+        lastSeen:m.last_seen?new Date(m.last_seen).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'Never',
+        queries:m.queries||0,
+        initials:(m.name||m.email).split(' ').map((n:string)=>n[0]).join('').slice(0,2).toUpperCase()
+      })))
+    }catch{}
+  },[])
+
+  const refreshUsage = useCallback(async(forcedCount?:number|null)=>{
+    if(typeof forcedCount==='number'){
+      setUsageCount(forcedCount)
+      return
+    }
+    try{
+      setRefreshingUsage(true)
+      const d = await fetch('/api/usage', { cache:'no-store' }).then(r=>r.ok?r.json():null)
+      if(d?.count!=null) setUsageCount(d.count)
+    }catch{}
+    finally{ setRefreshingUsage(false) }
+  },[])
+
+  const refreshAdminStats = useCallback(async(forcedCount?:number|null)=>{
+    await Promise.all([refreshUsage(forcedCount), refreshTeam()])
+  },[refreshUsage, refreshTeam])
+
+  useEffect(()=>{
+    refreshAdminStats()
+    fetch('/api/auth').then(r=>r.ok?r.json():null).then(d=>{
+      if(d?.plan) setPlan(d.plan.charAt(0).toUpperCase()+d.plan.slice(1))
+    }).catch(()=>{})
+
+    const onUsageUpdated=(ev:any)=>refreshAdminStats(ev?.detail?.count)
+    const onFocus=()=>refreshAdminStats()
+    window.addEventListener('qwezy:usage-updated', onUsageUpdated)
+    window.addEventListener('focus', onFocus)
+    return ()=>{
+      window.removeEventListener('qwezy:usage-updated', onUsageUpdated)
+      window.removeEventListener('focus', onFocus)
+    }
+  },[refreshAdminStats])
   const ROLES=[
     {role:'Admin',desc:'Full access — manage settings, users, data, and all queries',color:C.accent},
     {role:'Editor',desc:'Can query, build dashboards, run reports, and edit grid data',color:'#3B82F6'},
@@ -3358,9 +4159,9 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
   const [inviteEmail,setInviteEmail]=useState('')
   const [inviteRole,setInviteRole]=useState('Viewer')
   const [showInvite,setShowInvite]=useState(false)
-  const [showAddDB,setShowAddDB]=useState(false)
 
-  const usedPct=Math.round((PLAN_LIMITS.used/PLAN_LIMITS.queries)*100)
+  const PLAN_LIMITS={queries:500,resetDate:new Date(new Date().getFullYear(),new Date().getMonth()+1,1).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+  const usedPct=Math.round((usageCount/PLAN_LIMITS.queries)*100)
 
   return(
     <div style={{flex:1,overflowY:'auto',background:C.bg}}>
@@ -3376,9 +4177,9 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
 
           {/* Usage this cycle */}
           <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
-            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Usage this cycle</div>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Usage this cycle</div><button onClick={()=>refreshAdminStats()} style={{fontSize:11.5,padding:'4px 10px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.textMuted,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>{refreshingUsage?'Refreshing…':'Refresh'}</button></div>
             <div style={{display:'flex',alignItems:'flex-end',gap:6,marginBottom:10}}>
-              <span style={{fontSize:36,fontWeight:800,color:C.text,letterSpacing:'-1px',lineHeight:1}}>{PLAN_LIMITS.used}</span>
+              <span style={{fontSize:36,fontWeight:800,color:C.text,letterSpacing:'-1px',lineHeight:1}}>{usageCount.toLocaleString()}</span>
               <span style={{fontSize:14,color:C.textLight,marginBottom:4}}>/ {PLAN_LIMITS.queries} queries</span>
             </div>
             <div style={{height:6,background:'#E5E7EB',borderRadius:3,overflow:'hidden',marginBottom:8}}>
@@ -3391,7 +4192,7 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
           <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
             <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>Plan</div>
             <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-              <div style={{fontSize:22,fontWeight:800,color:C.text}}>Starter</div>
+              <div style={{fontSize:22,fontWeight:800,color:C.text}}>{plan}</div>
               <span style={{fontSize:11,padding:'2px 8px',borderRadius:4,background:C.accentBg,color:C.accent,fontWeight:700,border:`1px solid ${C.greenBorder}`}}>Active</span>
             </div>
             {[['Queries / month','500'],['Team seats','5'],['Databases','1'],['Data access AI','Included']].map(([k,v])=>(
@@ -3497,60 +4298,60 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour}:{dataAccess:boolean,s
           </div>
         </div>
 
-        {/* Database */}
+        {/* Database connection */}
         <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
             <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Database connection</div>
-            <button onClick={()=>setShowAddDB(true)}
-              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add database</button>
+            <button onClick={()=>window.location.href='/connect'}
+              style={{fontSize:12.5,padding:'5px 14px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>
+              {dbConnected?'Reconnect':'Connect database →'}
+            </button>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-            {[['Database','Northwind Demo'],['Host','demo.supabase.co'],['Status','Connected'],['Tables','8 tables'],['Last synced','Just now'],['Plan','Demo — read only']].map(([k,v])=>(
+            {[
+              ['Database', companyName||'—'],
+              ['Tables', tableCount>0?`${tableCount} tables`:'—'],
+              ['Status', dbConnected?'Connected':'Not connected'],
+              ['AI Prompt', aiConfigured?'Configured ✓':'Not yet analysed'],
+            ].map(([k,v])=>(
               <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'8px 12px',background:'#F8FAFD',borderRadius:7,border:`1px solid ${C.cardBorder}`}}>
                 <span style={{fontSize:12.5,color:C.textMuted}}>{k}</span>
-                <span style={{fontSize:12.5,fontWeight:600,color:k==='Status'?C.success:C.text}}>{v}</span>
+                <span style={{fontSize:12.5,fontWeight:600,color:k==='Status'?(dbConnected?C.success:C.danger):k==='AI Prompt'&&aiConfigured?C.success:C.text}}>{v}</span>
               </div>
             ))}
           </div>
-          {showAddDB&&<AddDatabaseModal onClose={()=>setShowAddDB(false)}/>}
+          <button onClick={async(e)=>{
+              const btn=e.currentTarget;btn.textContent='Analysing your database…';btn.style.opacity='0.7'
+              try{
+                const r=await fetch('/api/company/analyse',{method:'POST'})
+                const d=await r.json()
+                btn.textContent=r.ok?`✓ ${d.message||'Analysis complete — AI is now configured'}`:`Error: ${d.error}`
+              }catch{btn.textContent='Something went wrong — try again'}
+              btn.style.opacity='1'
+            }}
+            style={{marginTop:12,width:'100%',padding:'8px',borderRadius:6,border:`1px solid ${C.accent}`,background:aiConfigured?C.accentBg:'#fff',color:C.accent,fontSize:12.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif',transition:'all 0.2s'}}>
+            {aiConfigured?'Re-run AI analysis':'Run AI analysis on your database'}
+          </button>
         </div>
 
-        {/* Health */}
-          <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
-            <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>System health</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:10,marginBottom:14}}>
-              {[['Queries Run','127','This cycle'],['Tables','8/8','All healthy'],['AI Response','Active','Via Qwezy AI'],['Members','3','Demo']].map(([l,v,s])=>(
-                <div key={l} style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:'11px 13px'}}>
-                  <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>{l}</div>
-                  <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:1}}>{v}</div>
-                  <div style={{fontSize:11,color:C.success,fontWeight:500}}>{s}</div>
-                </div>
-              ))}
-            </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-              <div style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:12}}>
-                <div style={{fontWeight:600,fontSize:13,color:C.text,marginBottom:10}}>Table Health</div>
-                {TABLES.map((t,i)=>(
-                  <div key={t.name} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                    <span style={{fontFamily:"'JetBrains Mono'",fontSize:10,color:C.text,width:90,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}</span>
-                    <div style={{flex:1,height:4,background:'#E5E7EB',borderRadius:3,overflow:'hidden'}}>
-                      <div style={{height:'100%',background:t.color,borderRadius:3,width:`${85+(i*3)%15}%`}}/>
-                    </div>
-                    <span style={{fontSize:10,fontWeight:600,color:C.textMuted,width:28,textAlign:'right'}}>{85+(i*3)%15}%</span>
-                  </div>
-                ))}
+        {/* System health */}
+        <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px',marginBottom:16}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:14}}>System health</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:10}}>
+            {[
+              ['Queries Run',String(usageCount),'This cycle'],
+              ['Tables',tableCount>0?String(tableCount):'—',dbConnected?'Connected':'Not connected'],
+              ['AI Response',aiConfigured?'Active':'Setup needed',aiConfigured?'Via Qwezy AI':'Run analysis above'],
+              ['Members',String(USERS.length),USERS.length===1?'1 user':`${USERS.length} users`],
+            ].map(([l,v,s])=>(
+              <div key={l} style={{background:'#F8FAFD',borderRadius:8,border:`1px solid ${C.cardBorder}`,padding:'11px 13px'}}>
+                <div style={{fontSize:9.5,color:C.textLight,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>{l}</div>
+                <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:1}}>{v}</div>
+                <div style={{fontSize:11,color:C.success,fontWeight:500}}>{s}</div>
               </div>
-              <div style={{background:C.codeBg,borderRadius:8,padding:12,border:'1px solid #21262D'}}>
-                <div style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:'#3FB950',fontWeight:600,marginBottom:10}}>Query costs</div>
-                {[['Per NL query','~$0.03'],['Direct SQL','~$0.00'],['Follow-up','~$0.04'],['Per 100 queries','~$1.50']].map(([k,v],i)=>(
-                  <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:i<3?'1px solid #21262D':'none'}}>
-                    <span style={{fontSize:12,color:i===3?'#E6EDF3':'#484F58',fontWeight:i===3?600:400}}>{k}</span>
-                    <span style={{fontSize:12,fontFamily:"'JetBrains Mono'",color:i===3?'#fff':'#3FB950',fontWeight:i===3?600:400}}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            ))}
           </div>
+        </div>
 
         {/* Help */}
         <div style={{background:'#fff',borderRadius:10,border:`1px solid ${C.cardBorder}`,padding:'18px 20px'}}>
@@ -3577,17 +4378,49 @@ export default function Dashboard() {
   const router=useRouter()
   const [tab,setTab]=useState<string>('ask')
   const [showTour,setShowTour]=useState(false)
+  const [isDemo,setIsDemo]=useState<boolean|null>(null)
+  const [liveSchema,setLiveSchema]=useState<any[]>([])
+  const [schemaLoading,setSchemaLoading]=useState(false)
+  const [dbName,setDbName]=useState('')
+  const [dbConnected,setDbConnected]=useState(false)
+  const [aiConfigured,setAiConfigured]=useState(false)
 
-  // Check if user needs onboarding or has no DB
+  // Determine demo vs real company user
   useEffect(()=>{
-    const check=async()=>{
-      try{
-        const res=await fetch('/api/company/status')
-        if(res.ok){const d=await res.json();if(d.needs_onboarding)setShowConnectPrompt(true)}
-      }catch{}
-    }
-    check()
+    fetch('/api/auth')
+      .then(r=>r.ok?r.json():null)
+      .then(d=>{
+        if(!d){setIsDemo(false);return}
+        // Handle both flat { company_id } and nested { user: { company_id } } response shapes
+        const profile = d.company_id ? d : (d.user || {})
+        const companyId = profile.company_id
+        const demo = companyId===NORTHWIND_COMPANY_ID
+        setIsDemo(demo)
+        if(profile.company_name) setDbName(profile.company_name)
+        if(profile.db_connected) setDbConnected(true)
+        if(profile.ai_configured) setAiConfigured(true)
+        if(!demo){
+          setSchemaLoading(true)
+          fetch('/api/schema')
+            .then(r=>r.ok?r.json():null)
+            .then(data=>{ if(data) setLiveSchema(schemaToTables(data)) })
+            .catch(()=>{})
+            .finally(()=>setSchemaLoading(false))
+        }
+      })
+      .catch(()=>setIsDemo(false))
   },[])
+
+  // Show connect prompt if user's company has no DB connected (read from auth)
+  useEffect(()=>{
+    if(isDemo===false){
+      // isDemo resolved to false — check if db_connected
+      fetch('/api/auth').then(r=>r.ok?r.json():null).then(d=>{
+        const profile = d?.company_id ? d : (d?.user || {})
+        if(d && !profile.db_connected) setShowConnectPrompt(true)
+      }).catch(()=>{})
+    }
+  },[isDemo])
 
   // Sync tab + tour from sessionStorage after mount (avoids SSR hydration mismatch)
   useEffect(()=>{
@@ -3650,16 +4483,28 @@ export default function Dashboard() {
     {id:'explorer',label:'Explorer'},
   ]
 
+  const appBootLoading = isDemo===null || schemaLoading
+  
   return(
-    <div style={{fontFamily:'Inter,-apple-system,sans-serif',display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden',background:C.bg}}>
+    <div style={{fontFamily:'Inter,-apple-system,sans-serif',display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden',background:C.bg,position:'relative'}}>
+      {appBootLoading && <OverlaySpinner label='Loading workspace…' />}
       <style>{`
         *{box-sizing:border-box;margin:0;padding:0}
         @keyframes spin{to{transform:rotate(360deg)}}
         .spin{animation:spin .8s linear infinite}
+        .landingCard{background:#FFFFFF;border:1px solid #D7E4DC;border-radius:20px;box-shadow:0 16px 36px rgba(10,35,28,0.06)}
+        .landingSoft{background:#FBFDFC;border:1px solid #D7E4DC;border-radius:18px}
+        .landing-chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid #D7E4DC;background:#fff;font-size:12px;font-weight:700}
+        .browserShell{background:#FFFFFF;border:1px solid #D7E4DC;border-radius:24px;box-shadow:0 24px 54px rgba(10,35,28,0.08);overflow:hidden}
+        .browserBar{height:34px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #D7E4DC;background:#F7FBF8}
+        .browserDots{display:flex;gap:6px}
+        .browserDots span{width:8px;height:8px;border-radius:999px;background:#D1D9D5;display:block}
+        .browserPill{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;border:1px solid #D7E4DC;background:#fff;font-size:12.5px;font-weight:700;color:#4B6358}
+        .sectionTitle{font-size:28px;font-weight:800;letter-spacing:-0.04em;color:#022C22}
       `}</style>
 
       {/* Navbar */}
-      <nav style={{background:C.navBg,borderBottom:`1px solid ${C.navBorder}`,height:48,display:'flex',alignItems:'center',paddingLeft:16,paddingRight:16,gap:0,flexShrink:0}}>
+      <nav style={{background:C.navBg,borderBottom:`1px solid ${C.navBorder}`,height:54,display:'flex',alignItems:'center',paddingLeft:18,paddingRight:18,gap:0,flexShrink:0,boxShadow:'0 1px 0 rgba(255,255,255,0.03) inset'}}>
         <div style={{display:'flex',alignItems:'center',gap:8,marginRight:16,paddingRight:14,borderRight:`1px solid ${C.navBorder}`}}>
           <div style={{width:24,height:24,background:'linear-gradient(135deg,#10B981,#059669)',borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center'}}>
             <span style={{color:'#fff',fontFamily:"'JetBrains Mono'",fontWeight:700,fontSize:10}}>{'{ }'}</span>
@@ -3670,7 +4515,7 @@ export default function Dashboard() {
         <div style={{display:'flex',gap:1,flex:1,overflow:'hidden'}}>
           {TABS.map(t=>(
             <button key={t.id} onClick={()=>{setTab(t.id);setGridTable(null)}}
-              style={{background:'none',border:'none',padding:'0 12px',height:48,fontSize:12.5,fontWeight:500,color:tab===t.id?'#fff':C.navText,cursor:'pointer',borderBottom:tab===t.id?`2px solid ${C.navActive}`:'2px solid transparent',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap'}}>
+              style={{background:'none',border:'none',padding:'0 14px',height:54,fontSize:13,fontWeight:700,color:tab===t.id?'#fff':C.navText,cursor:'pointer',borderBottom:tab===t.id?`2px solid ${C.navActive}`:'2px solid transparent',fontFamily:'Inter,sans-serif',whiteSpace:'nowrap',letterSpacing:'-0.01em'}}>
               {t.label}
             </button>
           ))}
@@ -3684,80 +4529,70 @@ export default function Dashboard() {
       <div style={{flex:1,display:'flex',overflow:'hidden',position:'relative'}}>
 
         {/* Sidebar */}
-        <aside style={{width:sideCollapsed?24:sideWidth,background:C.sidebar,borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:'width .15s',position:'relative'}}>
+        <aside style={{width:sideCollapsed?24:sideWidth,background:'#F8FBF9',borderRight:`1px solid ${C.sidebarBorder}`,display:'flex',flexDirection:'column',flexShrink:0,overflow:'hidden',transition:'width .15s',position:'relative'}}>
           {!sideCollapsed&&(
             <>
 
-              <div style={{padding:'9px 9px 6px',borderBottom:`1px solid ${C.sidebarBorder}`,background:'#FAFCFE',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div style={{padding:'11px 12px 8px',borderBottom:`1px solid ${C.sidebarBorder}`,background:'#FBFDFC',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                 <span style={{fontSize:9.5,fontWeight:600,color:C.textLight,textTransform:'uppercase',letterSpacing:'0.07em'}}>Tables</span>
                 <button onClick={()=>setSideCollapsed(true)} style={{background:'none',border:'none',fontSize:14,color:C.textLight,cursor:'pointer',lineHeight:1}}>‹</button>
               </div>
 
               <div style={{flex:1,overflowY:'auto',padding:'5px 7px'}}>
-                {TABLES.map(tbl => (
-                  <div
-                    key={tbl.name}
-                    style={{
-                      display:'flex',
-                      alignItems:'center',
-                      gap:6,
-                      padding:'6px 7px',
-                      borderRadius:5,
-                      marginBottom:2,
-                      cursor:'pointer'
-                    }}
-                    onClick={() => gridTable ? setGridTable(tbl) : setDrawerTable(tbl)}
-                    onDoubleClick={() => setGridTable(tbl)}
-                    onContextMenu={e=>{e.preventDefault();setInfoPanel({table:tbl,x:e.clientX,y:e.clientY})}}
-                    onMouseOver={e=>e.currentTarget.style.background='#F0F7FF'}
-                    onMouseOut={e=>e.currentTarget.style.background='transparent'}
-                  >
+                {(()=>{
+                  const displayTables=isDemo?TABLES:liveSchema
+                  if(schemaLoading) return <div style={{padding:'20px 10px',textAlign:'center',color:C.textLight,fontSize:12}}>Loading tables…</div>
+                  if(!isDemo&&displayTables.length===0) return (
+                    <div style={{padding:'16px 10px',textAlign:'center'}}>
+                      <div style={{fontSize:22,marginBottom:6}}>🔌</div>
+                      <div style={{fontSize:11.5,color:C.textMuted,lineHeight:1.6,marginBottom:10}}>No database connected</div>
+                      <button onClick={()=>window.location.href='/onboarding'}
+                        style={{fontSize:11,padding:'5px 12px',borderRadius:5,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>
+                        Connect database →
+                      </button>
+                    </div>
+                  )
+                  return displayTables.map((tbl:any) => (
                     <div
-                      style={{
-                        width:7,
-                        height:7,
-                        borderRadius:'50%',
-                        background:tbl.color,
-                        flexShrink:0
-                      }}
-                    />
-              
-                    <div style={{flex:1,minWidth:0}}>
-                      <div
-                        style={{
-                          fontSize:11.5,
-                          fontWeight:500,
-                          color:C.text,
-                          fontFamily:"'JetBrains Mono'",
-                          overflow:'hidden',
-                          textOverflow:'ellipsis',
-                          whiteSpace:'nowrap'
-                        }}
-                      >
-                        {tbl.name}
-                      </div>
-                      
-                      <div style={{fontSize:9.5,color:C.textLight}}>
-                        {tbl.rows} rows
+                      key={tbl.name}
+                      style={{display:'flex',alignItems:'center',gap:8,padding:'10px 10px',borderRadius:14,marginBottom:6,cursor:'pointer',border:'1px solid transparent'}}
+                      onClick={() => gridTable ? setGridTable(tbl) : setInfoPanel({table:tbl,x:0,y:0})}
+                      onDoubleClick={() => setGridTable(tbl)}
+                      onContextMenu={e=>{e.preventDefault();setInfoPanel({table:tbl,x:e.clientX,y:e.clientY})}}
+                      onMouseOver={e=>{e.currentTarget.style.background='#FFFFFF'; e.currentTarget.style.borderColor=C.cardBorder; e.currentTarget.style.boxShadow='0 10px 24px rgba(10,35,28,0.05)'}}
+                      onMouseOut={e=>{e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='transparent'; e.currentTarget.style.boxShadow='none'}}
+                    >
+                      <div style={{width:7,height:7,borderRadius:'50%',background:tbl.color,flexShrink:0}}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:11.5,fontWeight:500,color:C.text,fontFamily:"'JetBrains Mono'",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tbl.name}</div>
+                        {tbl.rows&&<div style={{fontSize:9.5,color:C.textLight}}>{tbl.rows} rows</div>}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                })()}
               </div>
 
               
               <div style={{padding:'9px 11px',borderTop:`1px solid ${C.sidebarBorder}`,background:'#FAFCFE'}}>
-                {[['Tables','8/8'],['Database','Northwind'],['Status','Connected']].map(([k,v])=>(
-                  <div key={k} style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-                    <span style={{fontSize:10.5,color:C.textLight}}>{k}</span>
-                    <span style={{fontSize:10.5,fontWeight:600,color:k==='Status'?C.success:C.text}}>{v}</span>
-                  </div>
-                ))}
+                {(()=>{
+                  const dt=isDemo?TABLES:liveSchema
+                  const connected=isDemo||dt.length>0
+                  return [
+                    ['Tables', isDemo?`${TABLES.length}/${TABLES.length}`:String(dt.length)],
+                    ['Database', isDemo?'Northwind':dbName||'—'],
+                    ['Status', connected?'Connected':'Not connected']
+                  ].map(([k,v])=>(
+                    <div key={k} style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                      <span style={{fontSize:10.5,color:C.textLight}}>{k}</span>
+                      <span style={{fontSize:10.5,fontWeight:600,color:k==='Status'?(connected?C.success:C.danger):C.text}}>{v}</span>
+                    </div>
+                  ))
+                })()}
               </div>
               {/* Sidebar resize */}
               <div onMouseDown={startSideDrag} style={{position:'absolute',right:0,top:0,bottom:0,width:5,cursor:'ew-resize',zIndex:10}}
                 onMouseOver={e=>e.currentTarget.style.background='rgba(5,150,105,0.2)'}
-                onMouseOut={e=>e.currentTarget.style.background='transparent'}/>
+                onMouseOut={e=>{e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='transparent'; e.currentTarget.style.boxShadow='none'}}/>
             </>
           )}
           {sideCollapsed&&(
@@ -3770,13 +4605,13 @@ export default function Dashboard() {
         <main style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           {gridTable&&<TableGridView table={gridTable} onClose={()=>setGridTable(null)} dataAccess={dataAccess}/>}
           {!gridTable&&<>
-          {tab==='ask'&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')}/>}
-          {tab==='builder'&&<BuilderTab/>}
-          {tab==='dashboard'&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult}/>}
-          {tab==='explorer'&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})}/>}
-          {tab==='reports'&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult}/></div>}
+          {tab==='ask'&&isDemo!==null&&<QwezyTab onAsk={q=>{setAskQ(q)}} initialInput={askQ} onInputConsumed={()=>setAskQ('')} isDemo={!!isDemo} dbConnected={isDemo===true||dbConnected} liveSchema={liveSchema}/>}
+          {tab==='builder'&&isDemo!==null&&<BuilderTab tables={isDemo===true?TABLES:liveSchema} isDemo={!!isDemo}/>}
+          {tab==='dashboard'&&isDemo!==null&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult} isDemo={!!isDemo} tables={isDemo===true?TABLES:liveSchema}/>}
+          {tab==='explorer'&&isDemo!==null&&!schemaLoading&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})} displayTables={isDemo===true?TABLES:liveSchema}/>}
+          {tab==='reports'&&isDemo!==null&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult} isDemo={!!isDemo}/></div>}
           {tab==='admin'&&(
-            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}}/>
+            <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}} aiConfigured={aiConfigured} tableCount={liveSchema.length} companyName={dbName} dbConnected={dbConnected}/>
           )}
 
           </>}
@@ -3787,10 +4622,9 @@ export default function Dashboard() {
       {infoPanel&&<TableInfoPanel table={infoPanel.table} x={infoPanel.x} y={infoPanel.y} onClose={()=>setInfoPanel(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setInfoPanel(null)}} onGrid={t=>{setGridTable(t);setInfoPanel(null)}} onDrawer={t=>{setDrawerTable(t);setInfoPanel(null)}}/> }
       {drawerTable&&<>
         <div onClick={()=>setDrawerTable(null)} style={{position:'fixed',inset:0,zIndex:199}}/>
-        <TableDrawer table={drawerTable} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>
+        <TableDrawer table={drawerTable} allTables={isDemo===true?TABLES:liveSchema} onClose={()=>setDrawerTable(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setDrawerTable(null)}}/>
       </>}
       {previewTable&&<PreviewModal table={previewTable} onClose={()=>setPreviewTable(null)}/>}
-      {contextMenu&&<ContextMenu x={contextMenu.x} y={contextMenu.y} table={contextMenu.table} onClose={()=>setContextMenu(null)} onAsk={askQuestion} onPreview={t=>{setPreviewTable(t);setContextMenu(null)}} onDrawer={t=>{setDrawerTable(t);setContextMenu(null)}} onGrid={t=>{setGridTable(t);setContextMenu(null)}}/>}
 
       {showConnectPrompt&&(
         <div style={{position:'fixed',inset:0,background:'rgba(10,20,30,0.6)',zIndex:800,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
@@ -3806,7 +4640,7 @@ export default function Dashboard() {
                   style={{background:'#fff',color:C.textMuted,border:`1px solid ${C.cardBorder}`,borderRadius:7,padding:'10px 20px',fontSize:13.5,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
                   Not now
                 </button>
-                <button onClick={()=>{setShowConnectPrompt(false);window.location.href='/onboarding'}}
+                <button onClick={()=>{setShowConnectPrompt(false);window.location.href='/connect'}}
                   style={{background:C.accent,color:'#fff',border:'none',borderRadius:7,padding:'10px 24px',fontSize:13.5,fontWeight:600,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
                   Connect database →
                 </button>
