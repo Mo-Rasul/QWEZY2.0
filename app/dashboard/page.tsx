@@ -2031,7 +2031,6 @@ function ReportsTab({sharedResults,onResultSaved,isDemo}:{sharedResults:Record<s
   const [expanded,setExpanded]=useState<string|null>(null)
   const [emailModal,setEmailModal]=useState<{report:any,rows:any[],fields:string[]}|null>(null)
   const [menuOpen,setMenuOpen]=useState<string|null>(null)
-  const [biPanel,setBiPanel]=useState<string|null>(null)
   const [newReport,setNewReport]=useState({name:'',description:'',sql:'',schedule:'weekly',refreshHours:168,shared:true,group:'Finance'})
   const existingGroups=useMemo(()=>Array.from(new Set(reports.map((r:any)=>r.group||'General'))) as string[],[reports])
 
@@ -2199,8 +2198,6 @@ function ReportsTab({sharedResults,onResultSaved,isDemo}:{sharedResults:Record<s
                                 style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>✉ Email results</button>
                               <button onClick={async()=>{setMenuOpen(null); if(!sharedResults[report.id])await runReport(report,true); const c=sharedResults[report.id]; if(c)exportCSV(c.rows,c.fields,report.name)}}
                                 style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>↓ Export CSV</button>
-                              <button onClick={()=>{setBiPanel(biPanel===report.id?null:report.id);setMenuOpen(null)}}
-                                style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>⚡ BI Connect</button>
                               <div style={{height:1,background:C.cardBorder,margin:'3px 0'}}/>
                               <button onClick={()=>{setReports((p:any[])=>p.filter(r=>r.id!==report.id));setMenuOpen(null)}}
                                 style={{display:'flex',alignItems:'center',gap:9,width:'100%',padding:'10px 14px',background:'none',border:'none',fontSize:13,color:C.danger,cursor:'pointer',fontFamily:'Inter,sans-serif',textAlign:'left'}}>🗑 Delete report</button>
@@ -2232,24 +2229,6 @@ function ReportsTab({sharedResults,onResultSaved,isDemo}:{sharedResults:Record<s
                           </div>
                         </div>
                         <ResultsTable rows={cached.rows} fields={cached.fields}/>
-                      </div>
-                    </div>
-                  )}
-
-                  {biPanel===report.id&&(
-                    <div style={{borderTop:`1px solid ${C.cardBorder}`,padding:'16px 18px',background:'#FBFDFC'}}>
-                      <div style={{fontSize:13.5,fontWeight:700,color:C.text,marginBottom:10}}>BI Tool Connection</div>
-                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                        {[{label:'PowerBI',desc:'Data → Get Data → Web → paste URL',url:`https://qwezy.io/api/export?report=${report.id}&format=json`},{label:'Tableau',desc:'Connect → Web Data Connector → paste URL',url:`https://qwezy.io/api/export?report=${report.id}&format=csv`},{label:'Google Sheets',desc:'=IMPORTDATA("url") in any cell',url:`https://qwezy.io/api/export?report=${report.id}&format=csv`}].map(({label,desc,url})=>(
-                          <div key={label} className="landingSoft" style={{padding:'12px 14px'}}>
-                            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
-                              <span style={{fontSize:13,fontWeight:700,color:C.text}}>{label}</span>
-                              <button onClick={()=>navigator.clipboard?.writeText(url)} style={{fontSize:11,padding:'4px 10px',borderRadius:999,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.accent,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:700}}>Copy URL</button>
-                            </div>
-                            <div style={{fontSize:11.5,color:C.textLight,marginBottom:5}}>{desc}</div>
-                            <div style={{fontFamily:"'JetBrains Mono'",fontSize:10.5,color:C.textMuted,background:'#fff',padding:'6px 8px',borderRadius:8,wordBreak:'break-all',border:`1px solid ${C.cardBorder}`}}>{url}</div>
-                          </div>
-                        ))}
                       </div>
                     </div>
                   )}
@@ -2476,24 +2455,27 @@ function AlertsTab({isDemo}:{isDemo:boolean}) {
     id:'',name:'',description:'',sourceType:'ai',prompt:'',sql:'',detailSql:'',severity:'warning',conditionType:'rows_gt_zero',conditionField:'',threshold:'',schedule:'daily',refreshHours:24,shared:false,isActive:true,visibleColumns:[]
   })
   const [preview,setPreview]=useState<{sql:string,rows:any[],fields:string[]} | null>(null)
+  const [runningAll,setRunningAll]=useState(false)
+  const autoRanAlerts=useRef(false)
 
   const loadAlerts = useCallback(async()=>{
-    if(isDemo){ setAlerts(DEFAULT_ALERTS); return }
+    if(isDemo){ setAlerts(DEFAULT_ALERTS); return DEFAULT_ALERTS }
     setLoading(true)
     try{
       const res = await fetch('/api/alerts', { cache:'no-store' })
       const data = await res.json()
       if(!res.ok) throw new Error(data?.error||'Failed to load alerts')
       const loaded = Array.isArray(data.alerts) ? data.alerts : []
-      setAlerts(loaded.length ? loaded : DEFAULT_ALERTS)
+      const nextAlerts = loaded.length ? loaded : DEFAULT_ALERTS
+      setAlerts(nextAlerts)
+      return nextAlerts
     }catch(e:any){
       setError(e.message || 'Failed to load alerts')
       setAlerts(DEFAULT_ALERTS)
+      return DEFAULT_ALERTS
     }
     finally{ setLoading(false) }
   },[isDemo])
-
-  useEffect(()=>{ loadAlerts() },[loadAlerts])
 
   const evaluateCondition = (rows:any[], fields:string[], conditionType:string, conditionField?:string, threshold?:any) => {
     const numThreshold = threshold===''||threshold==null ? null : Number(threshold)
@@ -2625,15 +2607,36 @@ function AlertsTab({isDemo}:{isDemo:boolean}) {
     await loadAlerts()
   }
 
+  const runAllAlerts = async()=>{
+    setError('')
+    setRunningAll(true)
+    try{
+      const loadedAlerts = await loadAlerts()
+      for(const alert of loadedAlerts.filter((a:any)=>a.isActive!==false)){
+        await runAlertNow(alert)
+      }
+    }catch(e:any){
+      setError(e.message || 'Failed to run alerts')
+    }finally{
+      setRunningAll(false)
+    }
+  }
+
+  useEffect(()=>{
+    if(autoRanAlerts.current) return
+    autoRanAlerts.current = true
+    runAllAlerts()
+  },[])
+
   return(
     <div>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
         <div>
           <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:2}}>Alerts</div>
-          <div style={{fontSize:12.5,color:C.textMuted}}>Saved conditions with trigger history. Page load shows latest status only. Use Run now to test.</div>
+          <div style={{fontSize:12.5,color:C.textMuted}}>Saved conditions with trigger history. Opening this tab runs all alerts automatically. Refresh runs them again.</div>
         </div>
         <div style={{marginLeft:'auto',display:'flex',gap:8}}>
-          <button onClick={loadAlerts} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>Refresh</button>
+          <button onClick={runAllAlerts} disabled={runningAll} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:`1px solid ${C.cardBorder}`,background:'#fff',color:C.text,cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600,opacity:runningAll?0.65:1}}>{runningAll?'Running…':'Refresh'}</button>
           <button onClick={()=>{setShowAdd(s=>!s); setError('')}} style={{fontSize:12.5,padding:'6px 16px',borderRadius:6,border:'none',background:C.accent,color:'#fff',cursor:'pointer',fontFamily:'Inter,sans-serif',fontWeight:600}}>+ Add alert</button>
         </div>
       </div>
@@ -3418,7 +3421,7 @@ const TOUR_STEPS = [
     body:'The Overview page loads KPIs and charts automatically. Click "+ Add visual" to create your own. Pick X and Y fields, choose a chart type, and see a live preview before adding.',
     tip:'Drag the bar at the bottom of any card to resize it. Click ··· to edit or remove.' },
   { tab:'reports', icon:'📋', title:'Schedule and share reports',
-    body:'Save any SQL as a report with a schedule. Run it on demand or automatically. Use ··· to email results to your team, export CSV, or connect to PowerBI and Tableau.',
+    body:'Save any SQL as a report with a schedule. Run it on demand or automatically. Use ··· to email results to your team or export CSV.',
     tip:'Email and CSV auto-run the query first if no cached data exists.' },
   { tab:'explorer', icon:'🔍', title:'Explore your database',
     body:'Browse every table and column. Click a table card for details, sample questions and join paths. Right-click for quick actions. Click "View top 100 rows" to preview instantly.',
@@ -4522,6 +4525,7 @@ export default function Dashboard() {
     {id:'builder',label:'Builder'},
     {id:'dashboard',label:'Dashboards'},
     {id:'reports',label:'Reports'},
+    {id:'alerts',label:'Alerts'},
     {id:'explorer',label:'Explorer'},
   ]
 
@@ -4652,6 +4656,7 @@ export default function Dashboard() {
           {tab==='dashboard'&&isDemo!==null&&<DashboardTab sharedResults={reportResults} onResultSaved={saveReportResult} isDemo={!!isDemo} tables={isDemo===true?TABLES:liveSchema}/>}
           {tab==='explorer'&&isDemo!==null&&!schemaLoading&&<ExplorerTab onAsk={askQuestion} setDrawerTable={setDrawerTable} handleRightClick={handleRightClick} onInfoPanel={(t,x,y)=>setInfoPanel({table:t,x,y})} displayTables={isDemo===true?TABLES:liveSchema}/>}
           {tab==='reports'&&isDemo!==null&&<div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}><ReportsTab sharedResults={reportResults} onResultSaved={saveReportResult} isDemo={!!isDemo}/></div>}
+          {tab==='alerts'&&isDemo!==null&&<div style={{flex:1,overflow:'auto',padding:18}}><AlertsTab isDemo={!!isDemo}/></div>}
           {tab==='admin'&&(
             <AdminPage dataAccess={dataAccess} setDataAccess={setDataAccess} onReplayTour={()=>{setShowTour(true);try{localStorage.removeItem('qwezy_tour_done_v2')}catch{}}} aiConfigured={aiConfigured} tableCount={liveSchema.length} companyName={dbName} dbConnected={dbConnected}/>
           )}
