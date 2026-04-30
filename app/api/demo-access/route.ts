@@ -106,38 +106,57 @@ export async function POST(req: NextRequest) {
   }
 
   // ── VERIFY OTP ─────────────────────────────────────────────────────────────
-  if (action === 'verify_otp') {
-    if (!email?.trim() || !code?.trim()) {
-      return NextResponse.json({ error: 'Email and code are required' }, { status: 400 })
-    }
-    const normalizedEmail = email.trim().toLowerCase()
+if (action === 'send_otp') {
+  if (!email?.trim()) {
+    return NextResponse.json({ error: 'Email is required' }, { status: 400 })
+  }
 
-    const { data: otpRow } = await supabaseAdmin
-      .from('otp_codes')
-      .select('*')
-      .eq('email', normalizedEmail)
-      .eq('code', code.trim())
-      .eq('used', false)
-      .single()
+  const normalizedEmail = email.trim().toLowerCase()
 
-    if (!otpRow) return NextResponse.json({ error: 'Invalid code. Please try again.' }, { status: 400 })
-    if (new Date(otpRow.expires_at) < new Date()) {
-      return NextResponse.json({ error: 'Code expired. Please request a new one.' }, { status: 400 })
-    }
+  // Check whether this email already exists in Qwezy records
+  const { data: existingProfile } = await supabaseAdmin
+    .from('users')
+    .select('id, email')
+    .eq('email', normalizedEmail)
+    .maybeSingle()
 
-    // Mark OTP as used
-    await supabaseAdmin.from('otp_codes').update({ used: true }).eq('email', normalizedEmail)
+  const { data: existingLead } = await supabaseAdmin
+    .from('leads')
+    .select('email, name, company')
+    .eq('email', normalizedEmail)
+    .maybeSingle()
 
-    // Create demo session
+  const knownEmail = !!existingProfile || !!existingLead
+
+  // If this email is NOT already known, force the survey first
+  if (!knownEmail && (!name?.trim() || !company?.trim())) {
+    return NextResponse.json({
+      ok: true,
+      returning: false,
+      needsForm: true,
+    })
+  }
+
+  // Only let true returning users skip the survey/login flow
+  const { data: previousOTP } = await supabaseAdmin
+    .from('otp_codes')
+    .select('email')
+    .eq('email', normalizedEmail)
+    .eq('used', true)
+    .limit(1)
+    .maybeSingle()
+
+  if (knownEmail && previousOTP) {
     const session = await createDemoSession(normalizedEmail)
-    if (session.error) return NextResponse.json({ error: session.error }, { status: 500 })
-
-    const res = NextResponse.json({ ok: true })
+    if (session.error) {
+      return NextResponse.json({ error: session.error }, { status: 500 })
+    }
+    const res = NextResponse.json({ ok: true, returning: true, skipOTP: true })
     setSessionCookies(res, session.token!, session.refreshToken)
     return res
   }
 
-  return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
+  // From here down, keep your existing OTP generation / lead upsert / email send logic
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
