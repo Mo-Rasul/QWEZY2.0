@@ -237,8 +237,15 @@ For non-SQL answers: {"type":"text","answer":"...","confidence":"high","assumpti
         system_prompt: systemPrompt,
         analysed_at: new Date().toISOString(),
         table_count: tablesRes.rows.length,
-        schemas: [...new Set(tablesRes.rows.map(t => t.table_schema))],
+        schemas: Array.from(
+          new Set(
+            tablesRes.rows
+              .map((t: any) => t.table_schema)
+              .filter(Boolean)
+          )
+        ),
       }
+      
 
       const { error: saveError } = await supabaseAdmin
         .from('companies')
