@@ -1,8 +1,6 @@
-// app/api/demo-access/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-app'
 
-const NORTHWIND_ADMIN_ID = '902560bb-6298-4ddc-b19a-be0036ee2009'
 const NORTHWIND_COMPANY_ID = '68065cb1-48d7-4488-bd78-9e354e6fb53f'
 
 function generateOTP(): string {
@@ -13,39 +11,65 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const { action, email, name, company, role, teamSize, industry, useCase, code } = body
 
-  // ── SEND OTP ───────────────────────────────────────────────────────────────
   if (action === 'send_otp') {
-    if (!email?.trim()) return NextResponse.json({ error: 'Email is required' }, { status: 400 })
+    if (!email?.trim()) {
+      return NextResponse.json({ error: 'Email is required' }, { status: 400 })
+    }
+
     const normalizedEmail = email.trim().toLowerCase()
 
-    // Return visitor check — if they've verified before, log them straight in
+    const { data: existingProfile } = await supabaseAdmin
+      .from('users')
+      .select('id, email')
+      .eq('email', normalizedEmail)
+      .maybeSingle()
+
+    const { data: existingLead } = await supabaseAdmin
+      .from('leads')
+      .select('email, name, company')
+      .eq('email', normalizedEmail)
+      .maybeSingle()
+
+    const knownEmail = !!existingProfile || !!existingLead
+
+    // Unknown email: require survey first
+    if (!knownEmail && (!name?.trim() || !company?.trim())) {
+      return NextResponse.json({
+        ok: true,
+        returning: false,
+        needsForm: true,
+      })
+    }
+
+    // Known returning visitor: allow direct access if they have already verified before
     const { data: previousOTP } = await supabaseAdmin
       .from('otp_codes')
       .select('email')
       .eq('email', normalizedEmail)
       .eq('used', true)
       .limit(1)
-      .single()
+      .maybeSingle()
 
-    if (previousOTP) {
-      // Return visitor — skip OTP, log them straight in
+    if (knownEmail && previousOTP) {
       const session = await createDemoSession(normalizedEmail)
-      if (session.error) return NextResponse.json({ error: session.error }, { status: 500 })
-      const res = NextResponse.json({ ok: true, returning: true, skipOTP: true })
+      if (session.error) {
+        return NextResponse.json({ error: session.error }, { status: 500 })
+      }
+
+      const res = NextResponse.json({
+        ok: true,
+        returning: true,
+        skipOTP: true,
+      })
       setSessionCookies(res, session.token!, session.refreshToken)
       return res
     }
 
-    // New visitor — if no name/company yet, tell the frontend to show the form
-    if (!name?.trim() || !company?.trim()) {
-      return NextResponse.json({ ok: true, returning: false, needsForm: true })
-    }
-
-    // Generate and store OTP
     const otp = generateOTP()
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
 
     await supabaseAdmin.from('otp_codes').delete().eq('email', normalizedEmail)
+
     await supabaseAdmin.from('otp_codes').insert({
       email: normalizedEmail,
       code: otp,
@@ -53,23 +77,24 @@ export async function POST(req: NextRequest) {
       used: false,
     })
 
-    // Save lead (upsert — don't duplicate)
-    await supabaseAdmin.from('leads').upsert({
-      email: normalizedEmail,
-      name: name.trim(),
-      company: company.trim(),
-      role: role || null,
-      team_size: teamSize || null,
-      industry: industry || null,
-      use_case: useCase || null,
-      source: 'demo',
-    }, { onConflict: 'email' })
+    await supabaseAdmin.from('leads').upsert(
+      {
+        email: normalizedEmail,
+        name: name?.trim() || null,
+        company: company?.trim() || null,
+        role: role || null,
+        team_size: teamSize || null,
+        industry: industry || null,
+        use_case: useCase || null,
+        source: 'demo',
+      },
+      { onConflict: 'email' }
+    )
 
-    // Send OTP email
     const emailRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -81,7 +106,7 @@ export async function POST(req: NextRequest) {
             <div style="margin-bottom:28px;">
               <span style="font-size:22px;font-weight:800;color:#059669;">Qwezy</span>
             </div>
-            <h2 style="font-size:22px;font-weight:700;margin-bottom:10px;">Hi ${name.trim()}, here's your code</h2>
+            <h2 style="font-size:22px;font-weight:700;margin-bottom:10px;">Hi ${name?.trim() || 'there'}, here's your code</h2>
             <p style="color:#6b7280;font-size:15px;line-height:1.7;margin-bottom:28px;">
               Use this code to access the Qwezy demo. It expires in 15 minutes.
             </p>
@@ -102,64 +127,50 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to send email. Please try again.' }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true, returning: false })
+    return NextResponse.json({ ok: true, returning: false, needsForm: false })
   }
 
-  // ── VERIFY OTP ─────────────────────────────────────────────────────────────
-if (action === 'send_otp') {
-  if (!email?.trim()) {
-    return NextResponse.json({ error: 'Email is required' }, { status: 400 })
-  }
+  if (action === 'verify_otp') {
+    if (!email?.trim() || !code?.trim()) {
+      return NextResponse.json({ error: 'Email and code are required' }, { status: 400 })
+    }
 
-  const normalizedEmail = email.trim().toLowerCase()
+    const normalizedEmail = email.trim().toLowerCase()
 
-  // Check whether this email already exists in Qwezy records
-  const { data: existingProfile } = await supabaseAdmin
-    .from('users')
-    .select('id, email')
-    .eq('email', normalizedEmail)
-    .maybeSingle()
+    const { data: otpRow } = await supabaseAdmin
+      .from('otp_codes')
+      .select('*')
+      .eq('email', normalizedEmail)
+      .eq('code', code.trim())
+      .eq('used', false)
+      .maybeSingle()
 
-  const { data: existingLead } = await supabaseAdmin
-    .from('leads')
-    .select('email, name, company')
-    .eq('email', normalizedEmail)
-    .maybeSingle()
+    if (!otpRow) {
+      return NextResponse.json({ error: 'Invalid code. Please try again.' }, { status: 400 })
+    }
 
-  const knownEmail = !!existingProfile || !!existingLead
+    if (new Date(otpRow.expires_at) < new Date()) {
+      return NextResponse.json({ error: 'Code expired. Please request a new one.' }, { status: 400 })
+    }
 
-  // If this email is NOT already known, force the survey first
-  if (!knownEmail && (!name?.trim() || !company?.trim())) {
-    return NextResponse.json({
-      ok: true,
-      returning: false,
-      needsForm: true,
-    })
-  }
+    await supabaseAdmin
+      .from('otp_codes')
+      .update({ used: true })
+      .eq('email', normalizedEmail)
+      .eq('code', code.trim())
 
-  // Only let true returning users skip the survey/login flow
-  const { data: previousOTP } = await supabaseAdmin
-    .from('otp_codes')
-    .select('email')
-    .eq('email', normalizedEmail)
-    .eq('used', true)
-    .limit(1)
-    .maybeSingle()
-
-  if (knownEmail && previousOTP) {
     const session = await createDemoSession(normalizedEmail)
     if (session.error) {
       return NextResponse.json({ error: session.error }, { status: 500 })
     }
-    const res = NextResponse.json({ ok: true, returning: true, skipOTP: true })
+
+    const res = NextResponse.json({ ok: true })
     setSessionCookies(res, session.token!, session.refreshToken)
     return res
   }
 
-  // From here down, keep your existing OTP generation / lead upsert / email send logic
+  return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
 
 async function createDemoSession(email: string): Promise<{ token?: string; refreshToken?: string; error?: string }> {
   try {
@@ -169,21 +180,20 @@ async function createDemoSession(email: string): Promise<{ token?: string; refre
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
 
-    // Get or create Supabase auth user for this demo email
-    const { data: { users } } = await supabaseAdmin.auth.admin.listUsers()
-    let authUser = users?.find((u: any) => u.email === email)
+    const { data } = await supabaseAdmin.auth.admin.listUsers()
+    const users = data?.users || []
+    let authUser = users.find((u: any) => u.email === email)
 
     if (!authUser) {
       const tempPwd = Math.random().toString(36).slice(2) + 'Qx9!'
-      const { data, error } = await supabaseAdmin.auth.admin.createUser({
+      const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
         email,
         password: tempPwd,
         email_confirm: true,
       })
       if (error) return { error: error.message }
-      authUser = data.user
+      authUser = created.user
 
-      // Create user profile pointing to Northwind
       await supabaseAdmin.from('users').insert({
         id: authUser.id,
         email,
@@ -193,9 +203,12 @@ async function createDemoSession(email: string): Promise<{ token?: string; refre
         status: 'active',
       })
     } else {
-      // Ensure profile exists and points to Northwind
       const { data: profile } = await supabaseAdmin
-        .from('users').select('id').eq('id', authUser.id).single()
+        .from('users')
+        .select('id')
+        .eq('id', authUser.id)
+        .maybeSingle()
+
       if (!profile) {
         await supabaseAdmin.from('users').insert({
           id: authUser.id,
@@ -206,28 +219,32 @@ async function createDemoSession(email: string): Promise<{ token?: string; refre
           status: 'active',
         })
       } else {
-        // Make sure they're pointed at Northwind (not a previous company)
-        await supabaseAdmin.from('users').update({
-          company_id: NORTHWIND_COMPANY_ID,
-          status: 'active',
-        }).eq('id', authUser.id)
+        await supabaseAdmin
+          .from('users')
+          .update({
+            company_id: NORTHWIND_COMPANY_ID,
+            status: 'active',
+          })
+          .eq('id', authUser.id)
       }
     }
 
-    // Generate a session token
-    const { data: linkData } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email,
-    })
-
-    // Sign in with password to get a proper session token
-    // We use a predictable demo password for demo users
     const demoPwd = `demo_${authUser.id.slice(0, 8)}_Qwezy!`
     await supabaseAdmin.auth.admin.updateUserById(authUser.id, { password: demoPwd })
-    const { data: signIn } = await supabase.auth.signInWithPassword({ email, password: demoPwd })
 
-    if (!signIn?.session?.access_token) return { error: 'Could not create session' }
-    return { token: signIn.session.access_token, refreshToken: signIn.session.refresh_token || '' }
+    const { data: signIn, error: signInError } = await supabase.auth.signInWithPassword({
+      email,
+      password: demoPwd,
+    })
+
+    if (signInError || !signIn?.session?.access_token) {
+      return { error: signInError?.message || 'Could not create session' }
+    }
+
+    return {
+      token: signIn.session.access_token,
+      refreshToken: signIn.session.refresh_token || '',
+    }
   } catch (err: any) {
     return { error: err.message }
   }
@@ -241,6 +258,7 @@ function setSessionCookies(res: NextResponse, token: string, refreshToken: strin
     maxAge: 60 * 60 * 24 * 7,
     path: '/',
   }
+
   res.cookies.set('qwezy_session', token, opts)
   res.cookies.set('qwezy_refresh', refreshToken, opts)
   res.cookies.set('qwezy_company', NORTHWIND_COMPANY_ID, opts)

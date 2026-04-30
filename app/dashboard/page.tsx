@@ -2576,7 +2576,7 @@ function AlertsTab({isDemo}:{isDemo:boolean}) {
     const evald = evaluateCondition(rows, fields, alert.conditionType, alert.conditionField, alert.threshold)
     const now = new Date().toISOString()
     const runStatus: 'triggered' | 'ok' = evald.triggered ? 'triggered' : 'ok'
-    
+
     const patch = {
       id: alert.id,
       lastCheckedAt: now,
@@ -4137,9 +4137,19 @@ function AdminPage({dataAccess,setDataAccess,onReplayTour,aiConfigured=false,tab
 
   const refreshTeam = useCallback(async()=>{
     try{
+      const auth = await fetch('/api/auth', { cache:'no-store' }).then(r=>r.ok?r.json():null)
+      const myEmail = String(auth?.email || '').toLowerCase()
+      const myRole = String(auth?.role || 'viewer').toLowerCase()
+    
       const d = await fetch('/api/team', { cache:'no-store' }).then(r=>r.ok?r.json():null)
-      const list=d?.users||d?.members||[]
-      setUSERS(list.map((m:any)=>({
+      const list = d?.users || d?.members || []
+    
+      const scopedList =
+        myRole === 'admin'
+          ? list
+          : list.filter((m:any) => String(m.email || '').toLowerCase() === myEmail)
+    
+      setUSERS(scopedList.map((m:any)=>({
         name:m.name||m.email,
         email:m.email,
         role:m.role?.charAt(0).toUpperCase()+m.role?.slice(1)||'Viewer',
